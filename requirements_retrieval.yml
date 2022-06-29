@@ -172,3 +172,9 @@ dependencies:
   - zipp=3.8.0=pyhd8ed1ab_0
   - zlib=1.2.12=h166bdaf_1
   - zstd=1.5.2=h8a70e8d_1
+  - pip:
+    - cftime==1.6.0
+    - improtoo==0.107
+    - netcdf4==1.6.0
+    - scipy==1.7.3
+prefix: /home/franzihe/anaconda3/envs/retrieval
