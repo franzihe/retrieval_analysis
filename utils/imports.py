@@ -1,5 +1,5 @@
 import xarray as xr
-from pymeteo import radar    #conda install -c cwebster2 pymeteo
+import pymeteo as pym    #conda install -c cwebster2 pymeteo
 from glob import glob
 
 import datetime
