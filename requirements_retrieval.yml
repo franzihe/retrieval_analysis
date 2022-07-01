@@ -11,16 +11,23 @@ dependencies:
   - backcall=0.2.0=pyh9f0ad1d_0
   - backports=1.0=py_2
   - backports.functools_lru_cache=1.6.4=pyhd8ed1ab_0
+  - bokeh=2.4.3=py37h89c1867_0
   - bottleneck=1.3.4=py37hda87dfa_1
   - brotli=1.0.9=h166bdaf_7
   - brotli-bin=1.0.9=h166bdaf_7
   - c-ares=1.18.1=h7f98852_0
   - ca-certificates=2022.6.15=ha878542_0
   - certifi=2022.6.15=py37h89c1867_0
+  - click=8.1.3=py37h89c1867_0
+  - cloudpickle=2.1.0=pyhd8ed1ab_0
   - cycler=0.11.0=pyhd8ed1ab_0
+  - cytoolz=0.11.2=py37h540881e_2
+  - dask=2021.10.0=pyhd8ed1ab_0
+  - dask-core=2021.10.0=pyhd3eb1b0_0
   - dbus=1.13.6=h5008d03_3
   - debugpy=1.6.0=py37hd23a5d3_0
   - decorator=5.1.1=pyhd8ed1ab_0
+  - distributed=2021.10.0=py37h06a4308_0
   - entrypoints=0.4=pyhd8ed1ab_0
   - expat=2.4.8=h27087fc_0
   - fftw=3.3.10=nompi_h77c792f_102
@@ -33,6 +40,7 @@ dependencies:
   - fonts-conda-forge=1=0
   - fonttools=4.33.3=py37h540881e_0
   - freetype=2.10.4=h0708190_1
+  - fsspec=2022.5.0=pyhd8ed1ab_0
   - gettext=0.19.8.1=h73d1719_1008
   - giflib=5.2.1=h36c2ea0_2
   - glib=2.70.2=h780b84a_4
@@ -41,6 +49,7 @@ dependencies:
   - gstreamer=1.20.3=hd4edc92_0
   - gzip=1.12=h166bdaf_0
   - hdf5=1.12.1=nompi_h2386368_104
+  - heapdict=1.0.1=py_0
   - icu=70.1=h27087fc_0
   - importlib-metadata=4.11.4=py37h89c1867_0
   - importlib_metadata=4.11.4=hd8ed1ab_0
@@ -48,6 +57,7 @@ dependencies:
   - ipython=7.33.0=py37h89c1867_0
   - jack=1.9.18=h8c3723f_1002
   - jedi=0.18.1=py37h89c1867_1
+  - jinja2=3.1.2=pyhd8ed1ab_1
   - jpeg=9e=h166bdaf_1
   - jupyter_client=7.3.4=pyhd8ed1ab_0
   - jupyter_core=4.10.0=py37h89c1867_0
@@ -104,10 +114,11 @@ dependencies:
   - libxkbcommon=1.0.3=he3ba5ed_0
   - libxml2=2.9.14=h22db469_0
   - libzlib=1.2.12=h166bdaf_1
+  - locket=1.0.0=pyhd8ed1ab_0
   - lz4-c=1.9.3=h9c3ff4c_1
-  - matplotlib=3.5.2=py37h89c1867_0
-  - matplotlib-base=3.5.2=py37hc347a89_0
+  - markupsafe=2.1.1=py37h540881e_1
   - matplotlib-inline=0.1.3=pyhd8ed1ab_0
+  - msgpack-python=1.0.4=py37h7cecad7_0
   - munkres=1.1.4=pyh9f0ad1d_0
   - mysql-common=8.0.29=haf5c9bc_1
   - mysql-libs=8.0.29=h28c427c_1
@@ -123,6 +134,7 @@ dependencies:
   - packaging=21.3=pyhd8ed1ab_0
   - pandas=1.3.5=py37h8c16a72_0
   - parso=0.8.3=pyhd8ed1ab_0
+  - partd=1.2.0=pyhd8ed1ab_0
   - pcre=8.45=h9c3ff4c_0
   - pexpect=4.8.0=pyh9f0ad1d_2
   - pickleshare=0.7.5=py_1003
@@ -143,15 +155,19 @@ dependencies:
   - python-dateutil=2.8.2=pyhd8ed1ab_0
   - python_abi=3.7=2_cp37m
   - pytz=2022.1=pyhd8ed1ab_0
+  - pyyaml=6.0=py37h540881e_4
   - pyzmq=23.2.0=py37h0c0c2a8_0
   - qt-main=5.15.4=ha5833f6_2
   - readline=8.1.2=h0f457ee_0
   - setuptools=62.6.0=py37h89c1867_0
   - sip=6.5.1=py37hcd2ae1e_2
   - six=1.16.0=pyh6c4a22f_0
+  - sortedcontainers=2.4.0=pyhd8ed1ab_0
   - sqlite=3.39.0=h4ff8645_0
+  - tblib=1.7.0=pyhd8ed1ab_0
   - tk=8.6.12=h27826a3_0
   - toml=0.10.2=pyhd8ed1ab_0
+  - toolz=0.11.2=pyhd8ed1ab_0
   - tornado=6.1=py37h540881e_3
   - traitlets=5.3.0=pyhd8ed1ab_0
   - typing-extensions=4.2.0=hd8ed1ab_1
@@ -168,13 +184,16 @@ dependencies:
   - xorg-libxau=1.0.9=h7f98852_0
   - xorg-libxdmcp=1.1.3=h7f98852_0
   - xz=5.2.5=h516909a_1
+  - yaml=0.2.5=h7f98852_2
   - zeromq=4.3.4=h9c3ff4c_1
+  - zict=2.2.0=pyhd8ed1ab_0
   - zipp=3.8.0=pyhd8ed1ab_0
   - zlib=1.2.12=h166bdaf_1
   - zstd=1.5.2=h8a70e8d_1
   - pip:
     - cftime==1.6.0
     - improtoo==0.107
+    - matplotlib==3.2.0
     - netcdf4==1.6.0
     - scipy==1.7.3
 prefix: /home/franzihe/anaconda3/envs/retrieval
