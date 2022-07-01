@@ -9,4 +9,5 @@ import gzip    # conda install -c conda-forge gzip
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
 import datetime
+from cmcrameri import cm
 
