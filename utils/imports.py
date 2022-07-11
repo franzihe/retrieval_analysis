@@ -12,3 +12,4 @@ import matplotlib.pyplot as plt     # conda install -c conda-forge matplotlib==3
 from matplotlib.dates import DateFormatter
 import pandas as pd
 import dask.array as da
+import functions as fct
