@@ -77,7 +77,7 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
                 ax.set( xlabel = "",
                         title =tt)
                 ax.xaxis.grid()
-                ax.set_xlim([day_start, _xmax])
+                ax.set_xlim([day_start, xmax])
                 ax.tick_params(axis='x', labelrotation=0, )
                 plt.setp(ax.get_xticklabels(), horizontalalignment="center")
                 ax.xaxis.set_major_formatter(date_form)
