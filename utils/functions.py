@@ -47,40 +47,46 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
         cbar.ax.set_ylabel('W ({})'.format(ds['W'].attrs['units']))
 
         # third plot precipitation accumulation hourly
-        axs[2].bar(ds['sum(precipitation_amount PT1H)'].time.values, ds['sum(precipitation_amount PT1H)'].values, width=0.025, align='center')
-        axs[2].set_ylabel('Precipitation ({})'.format(ds['sum(precipitation_amount PT1H)'].attrs['units']))
+        axs[2].bar(ds['precipitation'].time.values, ds['precipitation'].values, width=0.025, align='center')
+        axs[2].set_ylabel('Precipitation ({})'.format(ds['precipitation'].attrs['units']))
         axs[2].set_ylim([0, 4])
 
         # forth plot 2-m temperature
-        ds['air_temperature'].plot(ax = axs[3], x='time')
+        if len(ds['air_temperature'].dropna(dim='time')) != 0:
+                ds['air_temperature'].dropna(dim='time').plot(ax = axs[3], x='time')
+                axs[3].hlines(y= 2., xmin=day_start, xmax=xmax, color = 'grey')
+        
         axs[3].set_ylabel('2-m temperature ({})'.format(ds['air_temperature'].attrs['units']))
-        axs[3].hlines(y= 2., xmin=day_start, xmax=xmax, color = 'grey')
         axs[3].set_ylim([-11.5, 12.5])
 
         # fifth plot 10-m wind
         color = 'tab:blue'
-        axs[4].scatter(x=ds['wind_from_direction'].time.values, y =ds['wind_from_direction'].values, color=color,)
-        axs[4].set_ylabel('Wind direction ({})'.format(ds['wind_from_direction'].attrs['units']),color=color, )
+        if len(ds['wind_direction'].dropna(dim='time')) !=0:
+                axs[4].scatter(x=ds['wind_direction'].dropna(dim='time').time.values, y =ds['wind_direction'].dropna(dim='time').values, color=color,)
+        axs[4].set_ylabel('Wind direction ({})'.format(ds['wind_direction'].attrs['units']),color=color, )
         axs[4].tick_params(axis='y', labelcolor=color)
         axs[4].set_ylim(0, 360)
 
         ax2 = axs[4].twinx()
         color = 'tab:green'
-        ds['wind_speed'].plot(ax=ax2, x='time', color=color)
+        if len(ds['wind_speed'].dropna(dim='time')) !=0:
+                ds['wind_speed'].dropna(dim='time').plot(ax=ax2, x='time', color=color)
         ax2.set_ylabel('Wind speed ({})'.format(ds['wind_speed'].attrs['units']), color=color)
         ax2.tick_params(axis='y', labelcolor=color)
         ax2.set_ylim(0,20)
 
         # Define the date format
         date_form = DateFormatter("%H:00")
+        # if len(ds['air_temperature'].dropna(dim='time')) != 0
         for ax, tt in zip(axs,title):
                 ax.set( xlabel = "",
-                        title =tt)
+                                title =tt)
                 ax.xaxis.grid()
-                ax.set_xlim([day_start, xmax])
                 ax.tick_params(axis='x', labelrotation=0, )
                 plt.setp(ax.get_xticklabels(), horizontalalignment="center")
                 ax.xaxis.set_major_formatter(date_form)
+                if len(ds['air_temperature'].dropna(dim='time')) != 0 or len(ds['wind_direction'].dropna(dim='time')) !=0 or len(ds['wind_speed'].dropna(dim='time')) !=0:
+                        ax.set_xlim([day_start, xmax])
         for ax in axs[0:2]:
                         ax.set(ylabel = "Height [m]", yticklabels=ds['height'].isel(time=0).values[::5])
         
@@ -89,3 +95,11 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
         fig.suptitle("{} ({})".format(site.split('.')[0], ds.time.dt.date[0].values), fontweight="bold");
         fig.subplots_adjust(top=0.94)
 
+        
+
+def arrays_same_time_res(variable, da):
+    for i in range(variable.time.size):
+        idx = np.where((variable.time.isel(time=i) == da.time) ==True)[0][0]
+        da[idx] = variable.isel(time=i)
+
+    return(da)
