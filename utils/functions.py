@@ -29,7 +29,7 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
 
         # first plot reflectivity
         cf1 = ds['Ze'].plot.contourf(ax = axs[0], 
-                                x='time', y='range', 
+                                x='time', 
                                 vmin=-20, levels=np.arange(-20,30,0.5), 
                                 cmap=plt.get_cmap('pymeteo_radar'), 
                                 extend='max', add_colorbar=False)
@@ -39,7 +39,7 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
 
         # second plot Doppler velocity
         cf2 = ds['W'].plot.contourf(ax = axs[1], 
-                                        x='time', y='range',
+                                        x='time',
                                         vmin=-3, vmax=3, levels=np.arange(-3,3.5,0.5), 
                                         extend='both', cmap=cm.vik, add_colorbar=False,)
         cbaxes = fig.add_axes([0.92, 0.625, 0.025, 0.14])
@@ -95,7 +95,7 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
         fig.suptitle("{} ({})".format(site.split('.')[0], ds.time.dt.date[0].values), fontweight="bold");
         fig.subplots_adjust(top=0.94)
 
-        
+
 
 def arrays_same_time_res(variable, da):
     for i in range(variable.time.size):
@@ -103,3 +103,40 @@ def arrays_same_time_res(variable, da):
         da[idx] = variable.isel(time=i)
 
     return(da)
+
+
+def MRR_bin_averaged_dataset(ds, dsm):
+    ## Average MRR variables in range bins
+    # Radar equivalent reflectivity ($Ze$) in dBz is transformed to MRR radar reflectivity ($Z$) 
+    # in $mm^6 m^{-3}$ by the following relationship:
+    # # $$Ze = 10log_{10} (\frac{Z}{mm^6 m^{-3}})$$
+    # # $$Z = 10^{Ze/10} mm^6 m^{-3}$$
+    # # Once we know $Z$ it is possible to average over range sizes. The assumption is that the 4th 
+    # range represents the bin between 300 and 400m and so on. Reflectivity, Doppler velocity, and height will 
+    # be averaged in the bins (4,5), (6,7), (8,9), ... (26,27), (28,29), (30,31)
+    
+    _Ze_mean = xr.DataArray(data=da.full(shape = (len(ds.time),len(ds.range[1:-1][::2])), fill_value=np.nan), coords ={'time':ds.time.values, 'range':ds.range[1:-1][::2]})
+    _W_mean = xr.DataArray(data=da.full(shape = (len(ds.time),len(ds.range[1:-1][::2])), fill_value=np.nan), coords={'time':ds.time.values, 'range':ds.range[1:-1][::2]})
+    _height_mean = xr.DataArray(data=da.full(shape = (len(ds.time),len(ds.range[1:-1][::2])),fill_value=np.nan),coords={'time':ds.time.values, 'range':ds.range[1:-1][::2]})
+    _sWidth_mean = xr.DataArray(data=da.full(shape = (len(ds.time),len(ds.range[1:-1][::2])),fill_value=np.nan),coords={'time':ds.time.values, 'range':ds.range[1:-1][::2]})
+    for i, k in zip(ds.range[1:-1][::2].values, range(len(ds.range[1:-1][::2]))):
+                _Z = 10**(ds['Ze'].sel(range=slice(i, (i+1)))/10)
+                _Z_mean = _Z.mean('range', skipna=True, keep_attrs=True)
+                _Ze_mean[:, k] = 10*np.log10(_Z_mean)
+
+                _W_mean[:,k] = ds['W'].sel(range=slice(i, (i+1))).mean('range', skipna=True, keep_attrs=True)
+                _height_mean[:,k] = ds['height'].sel(range=slice(i, (i+1))).mean('range', skipna=True, keep_attrs=True)
+                _sWidth_mean[:,k] = ds['spectralWidth'].sel(range=slice(i, (i+1))).mean('range', skipna=True, keep_attrs=True)
+
+
+    dsm['Ze'] = _Ze_mean
+    dsm['W']  = _W_mean
+    dsm['height'] = _height_mean
+    dsm['spectralWidth'] = _sWidth_mean
+        
+    dsm['Ze'].attrs = ds['Ze'].attrs
+    dsm['W'].attrs = ds['W'].attrs
+    dsm['height'].attrs = ds['height'].attrs
+    dsm['spectralWidth'].attrs = ds['spectralWidth'].attrs
+
+    return dsm
