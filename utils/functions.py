@@ -624,3 +624,63 @@ def plt_prob_matrix_with_diff(height_bins,
     plt.tight_layout(rect=[0, 0, 0.9, 1])
     
     return fig, axs
+
+def noise_corrected_ze(da):
+    """
+    Return a copy of `da` (Ze) in which range‑bins 21‑25 are set to NaN
+    *after* 2023‑03‑07 10:32 **if** bin‑20 is NaN in that minute.
+    """
+    # split in time
+    zcorr1 = da.sel(time=slice(None, '2023-03-07T10:32')).copy()
+    zcorr2 = da.sel(time=slice('2023-03-07T10:33', None)).copy()
+    # mask range 21-25 if range 20 is Nan
+    mask_time = zcorr2.isel(range=20).isnull()                 # 1‑D (time) mask
+    # only keep it for the range slice 21‑25
+    # Now set range bins 21–25 to NaN at those times
+    zcorr2.loc[dict(time=mask_time, range=slice(21, 25))] = np.nan
+
+    # mask is True, and for range 21-25, set values to Nan 
+    # concatenate back along time (keeps coordinates & attrs)
+    return xr.concat([zcorr1, zcorr2], dim='time').sortby('time')
+
+# ### Use the empirical Ze-S relationship as given in 
+# Maahn, M. and Kollias, P.: Improved Micro Rain Radar snow measurements using Doppler spectra post-processing, Atmos. Meas. Tech., 5, 2661–2673, https://doi.org/10.5194/amt-5-2661-2012, 2012. 
+
+# $$ Ze = 56 \cdot S^{1.2}  \rightarrow S = \left(\frac{Ze}{56}\right)^{1/1.2}$$
+
+# assume Ze in $mm^6/m^3$ to get from [dBz] to [$mm^6/m^3$]
+
+# $$Ze [dBz] = 10 \cdot log_{10}(Ze [mm^6/m^3])$$
+# $$\rightarrow Ze [mm^6/m^3] = 10 ^{dBz/10}$$
+# Convert Ze (dBz) to snowfall rate (S)
+def ze_to_snowfall_rate(Ze_dbz):
+    # Ze to linear units
+    Ze_lin = 10 ** (Ze_dbz /10)
+    # Apply Z-S relationship
+    S = (Ze_lin / 56) ** (1/1.2)                # Matrosov (2007) - aggregate snowflakes
+    S_bracci = (Ze_lin / 134) ** (1/1.25)       # Bracci et al. (2021) - aggregate
+    S_nakai_a = (Ze_lin / 107.4) ** (1/1.67)    # Nakai et al. (2021) - heavily rimed aggregate
+    S_nakai_g = (Ze_lin / 227.4) ** (1/1.67)    # Nakai et al. (2021) - graupel
+    S_pu = (Ze_lin / 252) ** (1/2.03)           # Pu et al. (2020) - graupel
+
+
+    # convert rate per minute to mm/h
+    S = (S/60)#.resample(time='1H').sum()
+    S_bracci = (S_bracci/60)#.resample(time='1H').sum()
+    S_nakai_a = (S_nakai_a/60)#.resample(time='1H').sum()
+    S_nakai_g = (S_nakai_g/60)#.resample(time='1H').sum()
+    S_pu = (S_pu/60)#.resample(time='1H').sum()
+    
+    df1 = S.isel(range=3).drop('range').rename('Matrosov_aggregate').to_dataframe()
+    
+    df2 = S_bracci.isel(range=3).drop('range').rename('Bracci_aggregate').to_dataframe()
+    
+    df3 = S_nakai_a.isel(range=3).drop('range').rename('Nakai_aggregate').to_dataframe()
+    
+    df4 = S_nakai_g.isel(range=3).drop('range').rename('Nakai_graupel').to_dataframe()
+    
+    df5 = S_pu.isel(range=3).drop('range').rename('Pu_graupel').to_dataframe()
+    
+    
+    combined_df = pd.concat([df1, df2, df3, df4, df5], axis=1) # Use axis=1 to combine as new columns
+    return  combined_df # in mm/hr
