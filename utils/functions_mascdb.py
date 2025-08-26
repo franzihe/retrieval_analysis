@@ -1,12 +1,21 @@
 # from imports import *
 # from imports import requests, BeautifulSoup
 # import imports
-from imports_mascdb import (cm, np, ListedColormap,BoundaryNorm, plt, sns, pd, Patch, OrderedDict)
+from imports_mascdb import (cm, np, ListedColormap,BoundaryNorm, plt, sns, pd, Patch, OrderedDict, mdates)
 import pathlib
 
 
 fig_label = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)', '(g)', '(h)', '(i)', '(j)', '(k)', '(l)', '(m)', '(n)', '(o)', '(p)', '(q)', '(r)', '(s)', '(t)', '(u)', '(v)', '(w)', '(x)', '(y)', '(z)',
              '(aa)', '(bb)', '(cc)', '(dd)', '(ee)', '(ff)', '(gg)', '(hh)', '(ii)', '(jj)', '(kk)', '(ll)', '(mm)', '(nn)', '(oo)', '(pp)', '(qq)', '(rr)', '(ss)', '(tt)', '(uu)', '(vv)', '(ww)', '(xx)', '(yy)', '(zz)']
+
+custom_colors = {  
+                     'aggregate': cm.lipariS(2),  
+                     'graupel':cm.lipariS(4),   
+                     'mixed': cm.lipariS(3),
+                     'pristine':cm.lipariS(0),
+                
+                
+                }
 
 def wind_sector(deg):
     if (deg >= 337.5) or (deg < 22.5):
@@ -340,6 +349,58 @@ def plt_stacked_snowflake_windrose(df, direction_column='env_DD_test', class_col
         ax.set_yticklabels(['25%', '50%', '75%', '100%'])
     plt.tight_layout()
 
+def plt_timeseries_temp_snowflake_class(df_env, class_color=custom_colors, title="Snowflake Class Temperature"):
+    fig, ax = plt.subplots(figsize=(15,5))
+    # for (class_name, da), marker, color in zip(snowflake_class.items(), markers,colors):
+    for class_name, color in class_color.items():
+        df_env.loc[df_env['snowflake_class_name'] == class_name].plot(y='env_T_test', marker='+', label=class_name, linestyle='None', color=color, markersize=10, ax=ax, alpha=0.8)
+
+
+    ax.hlines(y=4., xmin=df_env.index[0], xmax=df_env.index[-1], colors='gray', linestyles=":")
+    ax.hlines(y=2., xmin=df_env.index[0], xmax=df_env.index[-1], colors='gray', linestyles=":")
+
+    ax.set_ylabel('env T [$^\circ$C]')
+
+
+        
+    # Set the x-axis labels daily using DateFormatter and DayLocator
+    ax.legend()
+    ax.grid(True, ls=':')
+    # ax.set_xlim([start_date, end_date])  # Set xlim to specific date range
+    ax.xaxis.set_major_locator(mdates.DayLocator())  # Set ticks for every day
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))  # Format labels as dates (Year-Month-Day)
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="center")  # Rotate the labels for better readability
+    ax.set_ylim([-6, 3])
+    ax.set_xlabel('Datetime')
+    ax.set_title(f"{title}", pad=20)
+
+    plt.tight_layout()
+
+def plt_timeseries_wind_snowflake_class(df_env, class_color=custom_colors, title="Snowflake Class Wind Direction"):
+    fig, ax = plt.subplots(figsize=(15,5))
+    # for (class_name, da), marker, color in zip(snowflake_class.items(), markers,colors):
+    for class_name, color in class_color.items():
+        df_env.loc[df_env['snowflake_class_name'] == class_name].plot(y='env_DD_test', marker='+', label=class_name, linestyle='None', color=color, markersize=10, ax=ax, alpha=0.8)
+
+
+
+    ax.set_ylabel('env T [$^\circ$C]')
+
+
+
+    # Set the x-axis labels daily using DateFormatter and DayLocator
+    ax.legend()
+    ax.grid(True, ls=':')
+    ax.xaxis.set_major_locator(mdates.DayLocator())  # Set ticks for every day
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))  # Format labels as dates (Year-Month-Day)
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="center")  # Rotate the labels for better readability
+    ax.set_yticks(np.arange(0,365,45))
+    ax.set_yticklabels(['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'])
+    ax.set_xlabel('Datetime')
+    ax.set_title(f"{title}", pad=20)
+
+    plt.tight_layout()
+
 def summarize_env_by_dominant_class(df, frequency=None, dominant_frac_threshold=None):
     
     
@@ -405,14 +466,7 @@ def summarize_env_by_dominant_class(df, frequency=None, dominant_frac_threshold=
 
 def test_dominance_threshold(df, frequency, dominant_frac_threshold, fig_dir):
     
-    custom_colors = {  
-                     'aggregate': cm.davos(0.),  
-                     'graupel':cm.davos(0.33),   
-                     'mixed': cm.davos(0.67),
-                     'pristine':cm.davos(0.89),
-                
-                
-                }
+    
     # df_nan = df.dropna()
     # # create a Boolean mask for the rows to remove
     # mask = df['snowflake_class_name'] == ''
@@ -435,13 +489,21 @@ def test_dominance_threshold(df, frequency, dominant_frac_threshold, fig_dir):
     # Define a lookup table
     data_max_map = {
         (None, None): (2500, 6.5),
-        (None, '1min'): (700, 6.5),
+        (None, '1min'): (500, 5),
         (None, '10min'): (150, 6.5),
         (None, '30min'): (70, 10),
+        (0.2, None): (2500, 6.5),
+        (0.2, '1min'): (700, 6.5),
+        (0.2, '10min'): (150, 6.5),
+        (0.2, '30min'): (70, 10),
         (0.5, None): (2500, 6.5),
         (0.5, '1min'): (700, 6.5),
         (0.5, '10min'): (150, 6.5),
         (0.5, '30min'): (70, 14),
+        (0.6, None): (2500, 6.5),
+        (0.6, '1min'): (500, 7),
+        (0.6, '10min'): (150, 6.5),
+        (0.6, '30min'): (70, 14),
         (0.7, None): (2500, 6.5),
         (0.7, '1min'): (600, 8),
         (0.7, '10min'): (100, 14),
@@ -509,6 +571,15 @@ def test_dominance_threshold(df, frequency, dominant_frac_threshold, fig_dir):
 
     plt_stacked_snowflake_windrose(df_env, direction_labels=direction_labels_16, class_color=custom_colors, title=f"Snowflake Types by Wind sector - Normalized ({frequency} - ≥{dominant_frac_threshold})", mode="total")
     figname = f"{new_dir}/windrose_sf_class_by_wind_sector_normalized_total.png"
+    plt.savefig(figname, format='png', bbox_inches='tight', transparent=True,dpi=300)
+    
+    plt_timeseries_temp_snowflake_class(df_env, class_color=custom_colors, title=f"Snowflake Type Temperature ({frequency} - ≥{dominant_frac_threshold})")
+    figname= f"{new_dir}/timeseries_temp_snowflake_class.png"
+    plt.savefig(figname, format='png', bbox_inches='tight', transparent=True,dpi=300)
+    
+    
+    plt_timeseries_wind_snowflake_class(df_env, class_color=custom_colors, title=f"Snowflake Type Wind Direction ({frequency} - ≥{dominant_frac_threshold})")
+    figname= f"{new_dir}/timeseries_wd_snowflake_class.png"
     plt.savefig(figname, format='png', bbox_inches='tight', transparent=True,dpi=300)
     
     return df_env
