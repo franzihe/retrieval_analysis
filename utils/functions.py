@@ -1,7 +1,7 @@
 # from imports import *
 # from imports import requests, BeautifulSoup
 # import imports
-from imports import (xr, np,datetime, datetime,cm,plt,DateFormatter, pd,da, BeautifulSoup,BoundaryNorm, LinearSegmentedColormap,requests)
+from imports import (xr, np,datetime, datetime,cm,plt,DateFormatter, pd,da, BeautifulSoup,BoundaryNorm, LinearSegmentedColormap,requests,date2num,)
 fig_label = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)', '(g)', '(h)', '(i)', '(j)', '(k)', '(l)', '(m)', '(n)', '(o)', '(p)', '(q)', '(r)', '(s)', '(t)', '(u)', '(v)', '(w)', '(x)', '(y)', '(z)',
              '(aa)', '(bb)', '(cc)', '(dd)', '(ee)', '(ff)', '(gg)', '(hh)', '(ii)', '(jj)', '(kk)', '(ll)', '(mm)', '(nn)', '(oo)', '(pp)', '(qq)', '(rr)', '(ss)', '(tt)', '(uu)', '(vv)', '(ww)', '(xx)', '(yy)', '(zz)']
 
@@ -684,3 +684,240 @@ def ze_to_snowfall_rate(Ze_dbz):
     
     combined_df = pd.concat([df1, df2, df3, df4, df5], axis=1) # Use axis=1 to combine as new columns
     return  combined_df # in mm/hr
+
+
+def get_subplot_title(day_start):
+    
+    if pd.Timestamp("2023-02-23") <= day_start <= pd.Timestamp("2023-03-13"):
+        # titles = ["CL61 Ceilometer backscatter",'MRR reflectivity', 'MRR mean Doppler Velocity', 'MRR spectral width', 'Precipitation accumulation', '2-m Air temperature', '10-m Wind', 'Snowflake class (MASCDB)']
+        titles = ['MRR reflectivity', 'Snowflake class (MASCDB)', 'Precipitation accumulation', 'Reflectivity at 400m', 'Reflectivity linear at 400m', ]
+    elif pd.Timestamp("2023-02-12") <= day_start <= pd.Timestamp("2023-02-22") or day_start == pd.Timestamp("2023-03-14"):
+        titles = ['Airport Ceilometer backscatter','MRR reflectivity', 'MRR mean Doppler Velocity', 'MRR spectral width', 'Precipitation accumulation', '2-m Air temperature', '10-m Wind', 'Snowflake class (MASCDB)']
+    else:
+        titles = ['Airport Ceilometer backscatter','MRR reflectivity', 'MRR mean Doppler Velocity', 'MRR spectral width', 'Precipitation accumulation', '2-m Air temperature', '10-m Wind', 'Snowflake class (MASCDB)']
+    
+    return titles
+
+
+def plot_pcolormesh_with_cbar(ax, fig, data, x, y, cmap, norm, cbar_bounds, cbar_label, cbar_pos):
+    pcm = ax.pcolormesh(x, y, data, cmap=cmap, norm=norm, shading='auto')
+    cbaxes = fig.add_axes(cbar_pos)
+    cbar = plt.colorbar(pcm, cax=cbaxes, shrink=0.5, extend='both', orientation='vertical')
+    cbar.ax.set_ylabel(cbar_label)
+    if cbar_bounds is not None:
+        cbar.set_ticks(cbar_bounds)
+    return pcm
+
+
+def format_range_axis(ax, ds):
+    ax.set_yticks(ds['range'][::9])
+    ax.set_yticklabels(ds['height'][0].values[::9])
+    ax.set_ylim(0, ds['range'].max())
+    ax.set_ylabel("Height [m]")
+
+
+def plot_snowflake_classes(ax, ds):
+    particle_classes = [
+    ('aggregate', 1),
+    # ('columnar_crystal', 2),
+    # ('columnar_planar_combination', 3),
+    ('graupel', 2),
+    ('pristine', 3)
+    # ('planar_crystal', 5),
+    # ('small_particle', 6)
+]
+    markers = ['*', '^',  'h','o',  's', 'd']
+    
+    for y_pos, (name, level) in enumerate(particle_classes, 1) :
+        data = ds[name].dropna('time')
+        ax.plot(date2num(data['time']), 
+                np.full(len(data['time']), level),
+                marker=markers[y_pos - 1], linestyle='None',
+                color=custom_colors[name], markersize=4, label=name)
+    # ax.legend(loc='best', )#fontsize=8)
+    ax.set_yticks(range(1, 4))
+    # ax.set_yticklabels("") 
+    ax.set_yticklabels([name for name, _ in particle_classes])
+    ax.grid(True, ls=':')
+
+
+custom_colors = {  
+                     'aggregate': cm.lipariS(2),  
+                     'graupel':cm.lipariS(4),   
+                     'mixed': cm.lipariS(3),
+                     'pristine':cm.lipariS(0),
+                
+                
+                }
+
+def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
+    # Colorbar layout parameters
+    cbar_left = 0.92
+    cbar_width = 0.015
+    # cbar_height = 0.0935
+    cbar_height = 0.2
+    # cbar_top = 0.85  # starting point at the top
+    cbar_top = 0.7
+    cbar_step = 0.1075  # vertical space between cbar axes
+        
+    
+
+    # titles = ['Airport Ceilometer backscatter','MRR reflectivity', 'MRR mean Doppler Velocity', 'MRR spectral width', 'Precipitation accumulation', '2-m Air temperature', '10-m Wind', 'Snowflake class (MASCDB)']
+    titles = get_subplot_title(day_start)
+    # fig, axsm = plt.subplots(5, 1, figsize=(8.27, 11.69), sharex=True, )
+    fig, axsm = plt.subplots(3, 1, figsize=(8.27, 7.014), sharex=True, )
+    axs = axsm.flatten()
+    
+    
+    
+    time_vals = date2num(ds['time'].values)
+    # Ceilometer
+    cmap = cm.lipari_r  # define the colormap
+    # extract all colors from the colormap
+    cmaplist = [cmap(i) for i in range(cmap.N)]
+    # force the first color entry to be white
+    cmaplist[0] = (255,255,255, 0.9)
+    # create the new map
+    cmap = LinearSegmentedColormap.from_list(
+    'Custom cmap', cmaplist, 10) # cmap.N
+    # define the bins and normalize
+    # bounds = np.linspace(0, 7e7, 11)
+    bounds = np.linspace(0, 200, 9)
+    norm = BoundaryNorm(bounds, cmap.N)
+    
+
+
+    
+    # Reflectivity'
+    # Define your radar-style reflectivity levels (can match the image closely)
+    bounds  = np.array([0, 3.5, 7, 10.5, 14, 17.5, 21, 24.5, 28])
+    norm    = BoundaryNorm(boundaries=bounds, ncolors=256)  # hawaii_r has 256 levels
+    # Use Crameri colormap (hawaii_r)
+    cmap    = cm.hawaii_r
+
+    plot_pcolormesh_with_cbar(ax=axs[0], fig=fig, data=ds['Ze'].transpose('range','time'), x=time_vals, y=ds['range'], cmap=cmap, norm=norm, cbar_bounds=bounds, cbar_label=f"Reflectivity [{ds['Ze'].attrs['units']}]", cbar_pos=[cbar_left, cbar_top -0 *cbar_step, cbar_width, cbar_height])
+
+    format_range_axis(axs[0], ds)
+
+    # snowflake class
+    plot_snowflake_classes(axs[1], ds)
+
+    
+    # Precipitation accumulation hourly
+    precip = ds['precipitation'].resample(time='1H').sum('time', skipna=True, keep_attrs=True)
+    axs[2].bar(precip.time.values, precip.values, width=np.timedelta64(40, 'm'), align='center', color='tab:blue', label='Valid Precipitation', alpha=0.5)
+    # Highlight missing data periods with shaded background
+    missing_times = precip['time'][np.where(precip==0.)].values
+    for t in missing_times:
+            axs[2].axvspan(t- np.timedelta64(20, 'm'), t + np.timedelta64(20, 'm'), color='gray', alpha=0.2)
+    axs[2].set_ylabel(f"Precipitation [{ds['precipitation'].attrs['units']}]")
+    axs[2].set_ylim([0, 4.1])
+    axs[2].legend()
+
+    # # Reflectivity in dbz at 400 m
+    # ze_400m = ds['Ze'].isel(range=3)#.dropna(dim='time')
+    # axs[3].plot(ze_400m['time'].values, ze_400m.values, color='darkviolet', linestyle='-')#s=2.5)
+    # axs[3].set_ylabel(f"Reflectivity [{ds['Ze'].attrs['units']}]")
+    # axs[3].set_yticks(np.arange(-10,50,10))
+    # axs[3].grid(True, ls=':')
+
+    # # Reflectivity in linear units mm^6 m^-3
+    # ze_lin_400m = ds['Ze_linear'].isel(range=3)
+    # axs[4].plot(ze_lin_400m['time'].values, ze_lin_400m.values, color='darkorange', linestyle='-')
+    # axs[4].set_ylabel("Ze [mm${^6}$/m${^3}$]")
+    # axs[4].grid(True, ls=':')
+    # axs[4].set_yscale('log')
+
+
+#     # # ceilometer backscatter   
+#     # bsc = ds['bsc'].dropna(dim=('altitude'), how='all')/1e-6   # Keep rows with at least 1 valid value along the 'altitude' dimension
+#     # bsc = bsc.transpose('altitude', 'time')
+#     # cbh = ds['cbh'].isel(layer = 1).where(ds['cbh'].isel(layer = 1) > -1.)
+#     # plot_pcolormesh_with_cbar(ax=axs[0], fig=fig, data=bsc, x=time_vals, y=ds['altitude'].where(~np.isnan(bsc)), cmap=cmap, norm=norm, cbar_bounds=bounds, cbar_label=f"Backscatter [{ds['bsc'].attrs['units']}]", cbar_pos=[cbar_left, cbar_top - 0 * cbar_step, cbar_width, cbar_height])
+
+#     # plot_pcolormesh_with_cbar(ax=axs[0], fig=fig, data=(ds['bsc']).dropna('altitude').transpose('altitude', 'time'), x=time_vals, y=ds['altitude'], cmap=cmap, norm=norm, cbar_bounds=np.arange(0,1.2e8,0.2e8), cbar_label='Backscatter', cbar_pos=[cbar_left, cbar_top - 0 * cbar_step, cbar_width, cbar_height])
+    
+#     # plot cloud base every 5 minutes
+#     if pd.Timestamp("2023-02-23") <= day_start <= pd.Timestamp("2023-03-13"):
+#         cbh_data = ds['cbh'].isel(layer=1).resample(time='5min').nearest()
+#     else:
+#         cbh_data = ds['cbh'].isel(layer=0).resample(time='5min').nearest()
+#     # cbh_data = ds['cbh'].isel(layer=0).resample(time='5min').nearest()
+#     cbh_attrs = ds['cbh'].attrs['units']
+#     axs[0].plot(date2num(cbh_data['time']), cbh_data.values, ".",linestyle = '-', markersize=2, alpha=0.3, color='grey', label=f"Cloud Base [{cbh_attrs}]")
+#     # axs[0].scatter(cbh_data['time'].values, cbh_data.values, marker=".", s=1.5, alpha=0.3, color='grey', label="Cloud Base")
+
+#     axs[0].set_yticks(np.arange(0, 5001, 1000))
+#     axs[0].set_ylim(0, 5000)
+#     axs[0].set_ylabel("Height [m]")
+#     axs[0].legend()
+#     
+#     # Doppler velocity
+#     bounds  = np.arange(-6,7,1)
+#     norm    = BoundaryNorm(boundaries=bounds, ncolors=256)
+#     cmap    = cm.vik
+    
+# #     dopp    = axs[2].pcolormesh(time_vals, ds['range'], ds['W'].transpose('range', 'time'), cmap=cmap, norm=norm, shading='auto')
+#     plot_pcolormesh_with_cbar(ax=axs[2], fig=fig, data=ds['W'].transpose('range', 'time'), x=time_vals, y=ds['range'], cmap=cmap, norm=norm, cbar_bounds=np.arange(-6, 8, 2), cbar_label=f"Doppler Velocity [{ds['W'].attrs['units']}]", cbar_pos=[cbar_left, cbar_top -2 * cbar_step, cbar_width, cbar_height])
+    
+#     format_range_axis(axs[2], ds)
+
+    
+#     # spectral Width
+#     bounds  = np.arange(0,1.1,0.1)
+#     norm    = BoundaryNorm(boundaries=bounds, ncolors=256)
+#     cmap    = cm.batlow_r
+    
+# #     sWidth  = axs[3].pcolormesh(time_vals, ds['range'], ds['spectralWidth'].transpose('range', 'time'), cmap=cmap, norm=norm, shading='auto')
+#     plot_pcolormesh_with_cbar(ax=axs[3], fig=fig, data=ds['spectralWidth'].transpose('range', 'time'), x=time_vals, y=ds['range'], cmap=cmap, norm=norm, cbar_bounds=np.arange(0,1.2,0.2), cbar_label=f"Spectral Width [{ds['spectralWidth'].attrs['units']}]", cbar_pos=[cbar_left, cbar_top -3 * cbar_step, cbar_width, cbar_height])
+    
+#     format_range_axis(axs[3], ds)
+
+    
+    
+    
+#     # 2m Temperature
+#     temp_data = ds['air_temperature'].dropna(dim='time')#.resample(time='5min').nearest()
+#     axs[5].plot(temp_data['time'].values, temp_data.values, color='tab:red')
+
+#     axs[5].hlines(y=2., xmin=day_start, xmax=xmax, color='grey')
+#     axs[5].set_ylabel(f"2m temperature [{ds['air_temperature'].attrs['units']}]")
+#     axs[5].set_ylim([-11.5, 12.5])
+
+
+    
+#     # 10m wind
+#     wd_data = ds['wind_direction'].dropna(dim='time').resample(time='5min').nearest()
+#     axs[6].scatter(wd_data['time'].values, wd_data.values, color='tab:blue', s=2.5)
+#     axs[6].set_ylabel(f"Wind direction [{ds['wind_direction'].attrs['units']}]", color='tab:blue')
+#     axs[6].tick_params(axis='y', labelcolor='tab:blue')
+#     axs[6].set_yticks(range(0, 360+90,90))
+#     axs[6].set_ylim(0,360)
+    
+#     ax2 = axs[6].twinx()
+#     ws_data = ds['wind_speed'].dropna(dim='time').resample(time='5min').nearest()
+#     ax2.plot(ws_data['time'].values, ws_data.values, color='tab:green')
+#     ax2.set_ylabel(f"Wind speed [{ds['wind_speed'].attrs['units']}]", color='tab:green')
+#     ax2.tick_params(axis='y', labelcolor='tab:green')
+#     ax2.set_ylim(0,20)
+
+    
+
+    
+
+    # Shared formatting
+    date_form = DateFormatter("%H:00")
+    for ax, title in zip(axs, titles):
+        ax.set(xlabel = "", title=title)
+        ax.xaxis.grid(ls=':')
+        ax.tick_params(axis='x', labelrotation=0)
+        plt.setp(ax.get_xticklabels(), horizontalalignment="center")
+        ax.xaxis_date()
+        ax.xaxis.set_major_formatter(date_form)
+        ax.set_xlim([day_start, xmax])
+
+    axs[-1].set(xlabel="Time [UTC]")
+    fig.suptitle(f"{site.split('.')[0]} ({ds.time.dt.date[0].values})", fontweight="bold")
+    # fig.subplots_adjust(top=0.94)
+    fig.subplots_adjust(top=0.92)
+

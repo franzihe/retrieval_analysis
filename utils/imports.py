@@ -25,3 +25,4 @@ from windrose import WindroseAxes
 from matplotlib.patches import Wedge
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
+from scipy.optimize import curve_fit
