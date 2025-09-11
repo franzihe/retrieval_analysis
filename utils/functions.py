@@ -765,7 +765,7 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
     # titles = ['Airport Ceilometer backscatter','MRR reflectivity', 'MRR mean Doppler Velocity', 'MRR spectral width', 'Precipitation accumulation', '2-m Air temperature', '10-m Wind', 'Snowflake class (MASCDB)']
     titles = get_subplot_title(day_start)
     # fig, axsm = plt.subplots(5, 1, figsize=(8.27, 11.69), sharex=True, )
-    fig, axsm = plt.subplots(3, 1, figsize=(8.27, 7.014), sharex=True, )
+    fig, axsm = plt.subplots(3, 1, figsize=(8.27, 7.014/3*3), sharex=True, )
     axs = axsm.flatten()
     
     
@@ -814,6 +814,17 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
     axs[2].set_ylim([0, 4.1])
     axs[2].legend()
 
+
+#     # Doppler velocity
+#     bounds  = np.arange(-6,7,1)
+#     norm    = BoundaryNorm(boundaries=bounds, ncolors=256)
+#     cmap    = cm.vik
+    
+# #     dopp    = axs[2].pcolormesh(time_vals, ds['range'], ds['W'].transpose('range', 'time'), cmap=cmap, norm=norm, shading='auto')
+#     plot_pcolormesh_with_cbar(ax=axs[3], fig=fig, data=ds['W'].transpose('range', 'time'), x=time_vals, y=ds['range'], cmap=cmap, norm=norm, cbar_bounds=np.arange(-6, 8, 2), cbar_label=f"Doppler Velocity [{ds['W'].attrs['units']}]", cbar_pos=[cbar_left, cbar_top -6 * cbar_step, cbar_width, cbar_height])
+    
+#     format_range_axis(axs[3], ds)
+
     # # Reflectivity in dbz at 400 m
     # ze_400m = ds['Ze'].isel(range=3)#.dropna(dim='time')
     # axs[3].plot(ze_400m['time'].values, ze_400m.values, color='darkviolet', linestyle='-')#s=2.5)
@@ -852,15 +863,7 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
 #     axs[0].set_ylabel("Height [m]")
 #     axs[0].legend()
 #     
-#     # Doppler velocity
-#     bounds  = np.arange(-6,7,1)
-#     norm    = BoundaryNorm(boundaries=bounds, ncolors=256)
-#     cmap    = cm.vik
-    
-# #     dopp    = axs[2].pcolormesh(time_vals, ds['range'], ds['W'].transpose('range', 'time'), cmap=cmap, norm=norm, shading='auto')
-#     plot_pcolormesh_with_cbar(ax=axs[2], fig=fig, data=ds['W'].transpose('range', 'time'), x=time_vals, y=ds['range'], cmap=cmap, norm=norm, cbar_bounds=np.arange(-6, 8, 2), cbar_label=f"Doppler Velocity [{ds['W'].attrs['units']}]", cbar_pos=[cbar_left, cbar_top -2 * cbar_step, cbar_width, cbar_height])
-    
-#     format_range_axis(axs[2], ds)
+#     
 
     
 #     # spectral Width
@@ -921,3 +924,28 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
     # fig.subplots_adjust(top=0.94)
     fig.subplots_adjust(top=0.92)
 
+def test_and_return_dominant_sf_class(seg, sclass):
+    # count the occurences of the snowflake class name within the dTime
+    aggregate_count = seg.str.count('aggregate').sum()
+    graupel_count = seg.str.count('graupel').sum()
+    pristine_count = seg.str.count('pristine').sum()
+    total_count = len(seg)
+
+    # calculate the fraction of this number to find which snowflake class dominates within dTime
+    frac_agg = aggregate_count/total_count
+    frac_graupel = graupel_count/total_count
+    frac_pris = pristine_count/total_count
+
+    largest_number = max(frac_agg, frac_graupel, frac_pris)
+
+    # assign dominant snowflake class to dTime if it occurs more than 60% 
+    if largest_number >= 0.6:
+        if largest_number == frac_agg:
+            sclass.append('aggregate')
+        elif largest_number == frac_graupel:
+            sclass.append('graupel')
+        elif largest_number == frac_pris:
+            sclass.append('pristine')
+    if largest_number < 0.6:
+        sclass.append('mixed')
+    return sclass

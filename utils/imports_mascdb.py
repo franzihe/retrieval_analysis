@@ -15,3 +15,4 @@ import xarray as xr
 from collections import OrderedDict
 import time
 from datetime import datetime
+from seaborn import set_context
