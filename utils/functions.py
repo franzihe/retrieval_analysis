@@ -671,16 +671,16 @@ def ze_to_snowfall_rate(Ze_dbz):
     S_nakai_g = (S_nakai_g/60)#.resample(time='1H').sum()
     S_pu = (S_pu/60)#.resample(time='1H').sum()
     
-    df1 = S.isel(range=3).drop('range').rename('Matrosov_aggregate').to_dataframe()
-    
-    df2 = S_bracci.isel(range=3).drop('range').rename('Bracci_aggregate').to_dataframe()
-    
-    df3 = S_nakai_a.isel(range=3).drop('range').rename('Nakai_aggregate').to_dataframe()
-    
-    df4 = S_nakai_g.isel(range=3).drop('range').rename('Nakai_graupel').to_dataframe()
-    
-    df5 = S_pu.isel(range=3).drop('range').rename('Pu_graupel').to_dataframe()
-    
+    # df1 = S.isel(range=3).drop('range').rename('Matrosov_aggregate').to_dataframe()
+    df1 = S.rename('Matrosov_aggregate').to_dataframe()
+    # df2 = S_bracci.isel(range=3).drop('range').rename('Bracci_aggregate').to_dataframe()
+    df2 = S_bracci.rename('Bracci_aggregate').to_dataframe()
+    # df3 = S_nakai_a.isel(range=3).drop('range').rename('Nakai_aggregate').to_dataframe()
+    df3 = S_nakai_a.rename('Nakai_aggregate').to_dataframe()
+    # df4 = S_nakai_g.isel(range=3).drop('range').rename('Nakai_graupel').to_dataframe()
+    df4 = S_nakai_g.rename('Nakai_graupel').to_dataframe()
+    # df5 = S_pu.isel(range=3).drop('range').rename('Pu_graupel').to_dataframe()
+    df5 = S_pu.rename('Pu_graupel').to_dataframe()
     
     combined_df = pd.concat([df1, df2, df3, df4, df5], axis=1) # Use axis=1 to combine as new columns
     return  combined_df # in mm/hr
@@ -949,3 +949,6 @@ def test_and_return_dominant_sf_class(seg, sclass):
     if largest_number < 0.6:
         sclass.append('mixed')
     return sclass
+
+def model(x, a, b):
+    return a * x**b
