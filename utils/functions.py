@@ -10,7 +10,21 @@ ze_bins = np.arange(-10,31,1)# Reflectivity bins [dBZ] 1 dBZ for reflectivity
 W_bins = np.arange(-3,3,0.075) # bin widths of 0.075 m s−1 for Doppler velocity
 sW_bins = np.arange(0,1.2, 0.05) # bin widths of 0.05 m s−1 for Doppler spectral width
 
+cmap = cm.glasgow  # define the colormap
+# extract all colors from the colormap
+cmaplist = [cmap(i) for i in range(cmap.N)]
+# create the new map
+cmap = LinearSegmentedColormap.from_list(
+'Custom cmap', cmaplist, 4) # cmap.N
 
+custom_colors = {  
+                     'aggregate': cmap(0),  
+                     'graupel':cmap(1),   
+                     'mixed': cmap(2),
+                     'pristine':cmap(3),
+                
+                
+                }
 
 # Function to scrape file URLs
 def get_file_urls(catalog_url, day):
@@ -741,14 +755,6 @@ def plot_snowflake_classes(ax, ds):
     ax.grid(True, ls=':')
 
 
-custom_colors = {  
-                     'aggregate': cm.lipariS(2),  
-                     'graupel':cm.lipariS(4),   
-                     'mixed': cm.lipariS(3),
-                     'pristine':cm.lipariS(0),
-                
-                
-                }
 
 def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
     # Colorbar layout parameters
