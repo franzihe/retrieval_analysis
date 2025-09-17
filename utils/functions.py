@@ -1,7 +1,7 @@
 # from imports import *
 # from imports import requests, BeautifulSoup
 # import imports
-from imports import (xr, np,datetime, datetime,cm,plt,DateFormatter, pd,da, BeautifulSoup,BoundaryNorm, LinearSegmentedColormap,requests,date2num,)
+from imports import (xr, np,datetime, datetime,cm,plt,DateFormatter, pd,da, BeautifulSoup,BoundaryNorm, LinearSegmentedColormap,requests,date2num,sns)
 fig_label = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)', '(g)', '(h)', '(i)', '(j)', '(k)', '(l)', '(m)', '(n)', '(o)', '(p)', '(q)', '(r)', '(s)', '(t)', '(u)', '(v)', '(w)', '(x)', '(y)', '(z)',
              '(aa)', '(bb)', '(cc)', '(dd)', '(ee)', '(ff)', '(gg)', '(hh)', '(ii)', '(jj)', '(kk)', '(ll)', '(mm)', '(nn)', '(oo)', '(pp)', '(qq)', '(rr)', '(ss)', '(tt)', '(uu)', '(vv)', '(ww)', '(xx)', '(yy)', '(zz)']
 
@@ -958,3 +958,325 @@ def test_and_return_dominant_sf_class(seg, sclass):
 
 def model(x, a, b):
     return a * x**b
+
+def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1H", min_rate=0.1, altitudes=[400, 800, 1000]):
+    if mode == "event":
+        notna_idx = df_sum['precipitation'].dropna().index
+        notna_idx = notna_idx.append(pd.Index([df_sum.index[-1]]))
+        segment_bounds = notna_idx
+
+    elif mode == "fixed":
+        step = pd.to_timedelta(duration)
+        step = int(step/pd.Timedelta(seconds=60))
+        dt_idx = df_sum.index[step::step] # step in minutes
+        dt_idx = dt_idx.append(pd.Index([df_sum.index[-1] + pd.Timedelta(minutes=1)]))
+        segment_bounds = dt_idx
+    else:
+        raise ValueError("mode must be 'event' or 'fixed'")
+    
+    # Loop over segments
+    sums, means, sclass, fs = [], [], [], []
+    for i in range(len(segment_bounds)):
+        if i == 0:
+            seg = df_sum[:segment_bounds[0]]
+            seg_m = df_mean[:segment_bounds[0]]
+            seg_sf = sf_class[:segment_bounds[0]]
+        else:
+            seg = df_sum.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
+            seg_m = df_mean.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
+            seg_sf = sf_class.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
+
+        # filter: remove warm segments (>2 °C)
+        all_T = seg_m['air_temperature'].dropna()
+        if (len(all_T) != 0) and (sum(all_T > 2.) >=1):
+            seg[:] = np.nan
+            seg_m[:] = np.nan
+            seg_sf[:] = np.nan
+
+        sums.append(seg.sum(numeric_only=True, min_count=1))
+        means.append(seg_m.mean(numeric_only=True, skipna=True))
+
+        if len(seg_sf) != 0:
+            sclass = test_and_return_dominant_sf_class(seg_sf['snowflake_class_name'], sclass)
+            fs.append(seg_sf['fallspeed'].mean(numeric_only=True, skipna=True))
+        else:
+            sclass.append(np.nan)
+            fs.append(np.nan)
+
+        
+    # Combine into one Dataframe with all values
+    df_out = pd.concat([pd.DataFrame(sums).set_index(segment_bounds),
+                        pd.DataFrame(means).set_index(segment_bounds),
+                        pd.DataFrame({"snowflake_class_name":sclass}).set_index(segment_bounds), 
+                        pd.DataFrame({"fallspeed":fs}).set_index(segment_bounds)], axis=1)
+    df_out.rename(columns={"precipitation":"Geonor",}, inplace=True)
+
+    # Convert snowfall increments to rate (mm/h)
+    df_out["delta_h"] = df_out.index.to_series().diff().dt.total_seconds() / 3600 # Calculate time difference in hours
+    df_out["rate_mm_h"] = df_out["Geonor"] / df_out["delta_h"] # Convert to mm/h rate
+    df_out = df_out[df_out["rate_mm_h"] >= min_rate] # limit Geonor precipitation to be above 0.1 mm/h
+    df_out['start_time'] = df_out.index - pd.to_timedelta(df_out['delta_h'] * 3600, unit='sec')
+
+    for alt in altitudes:
+        # Z from linear sums/means
+        df_out[f'Z_from_linear_sum_{alt}'] = df_out[f'Ze_linear_sum_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
+        df_out[f'Z_from_linear_mean_{alt}'] = df_out[f'Ze_linear_mean_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
+        # Rates
+        for name in ["Matrosov_a", "Bracci_a", "Nakai_a", "Nakai_g", "Pu_g"]:
+            df_out[f"{name}_{alt}_mm_h"] = df_out[f"{name}_{alt}"] / df_out["delta_h"]
+
+        # Matrosov from Ze_sum
+        df_out[f'Matrosov_from_ze_sum_{alt}'] = ((df_out[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_out["delta_h"])  # convert rate to mm
+
+    return df_out
+
+
+def plt_geonor_vs_ze_vs_precip_scatter(ylabels, class_based=False,  df=None, df_only_class=None, xlim=(0.09, 30), ylim_panel0=None, ylim_panel1=None):
+
+    """
+    Generalized routine to plot two scatter panels:
+    - Panel 0: scatter against Ze (with Matrosov line)
+    - Panel 1: scatter against Matrosov (with 1-1 line)
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data for scatter plots (when not class_based).
+    ylabels : list[str]
+        Axis labels for the two panels.
+    xlim, ylim_panel0, ylim_panel1 : tuple or None
+        Axis limits.
+    class_based : bool
+        If True, use df_only_class
+    df_only_class : dict[str, pd.DataFrame]
+        Class-split data for class_based mode.
+    """
+
+
+    fig, axsm = plt.subplots(1, 2, figsize=(10, 5, ), sharex=True, )
+    axs = axsm.flatten()
+
+    if not class_based:
+        # scatter by altitude
+        for i, alt in enumerate([1000, 800, 400]):
+            axs[0].scatter(df['rate_mm_h'], df[f'Ze_linear_sum_{alt}'], color=cmap(i), alpha=0.7, label=f'{alt} m', edgecolor=cmap(i))
+            axs[1].scatter(df['rate_mm_h'], df[f'Matrosov_a_{alt}_mm_h'], color=cmap(i), alpha=0.7, label=f'{alt} m', edgecolor=cmap(i))
+    else:
+        # scatter by snowflake class
+        for (class_name, color) in custom_colors.items():
+            axs[0].scatter(df_only_class[class_name]['rate_mm_h'], df_only_class[class_name]['Ze_linear_sum_400'], color=color, alpha=0.7, label=f"{class_name}".title(), edgecolor=color)
+            axs[1].scatter(df_only_class[class_name]['rate_mm_h'], df_only_class[class_name][f'Matrosov_a_400_mm_h'], color=color, alpha=0.7, label=f"{class_name}".title(), edgecolor=color)
+        
+    # Shared formatting
+    # Generate line for Matrosov
+    x_line = np.linspace(0, 50, 200)
+    y_line = 56 * x_line**1.2
+
+    # 1-1 line
+    x = np.linspace(0, 50, 100)
+    y = x
+
+    bb = (fig.subplotpars.left, fig.subplotpars.top+0.02, 
+        fig.subplotpars.right-fig.subplotpars.left,.1)
+    for i, ax in enumerate(axs.flatten()):
+        ax.grid(True, ls=':')
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.text(0.045, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
+        if i == 0: 
+            ax.plot(x_line, y_line, color='black', label="Matrosov Z = 56 S$^{1.2}$")
+            ax.set(xlabel='Geonor [mm h$^{-1}$]', ylabel=ylabels[0], xlim=xlim, )
+            if ylim_panel0: ax.set_ylim(ylim_panel0)
+            ax.legend(bbox_to_anchor=bb, mode="expand", loc="lower left",
+                ncol=5, borderaxespad=0., bbox_transform=fig.transFigure)
+
+        else:
+            ax.plot(x, y, linestyle='--', color='darkgrey')
+            ax.set(xlabel='Geonor [mm h$^{-1}$]', ylabel=ylabels[1], xlim=xlim, ylim=(0.09, 50),  )
+            if ylim_panel1: ax.set_ylim(ylim_panel1)
+
+        
+
+    plt.tight_layout()
+
+
+def plt_masc_vs_mrr_fallspeed(
+    class_based=False,
+    df=None,
+    df_only_class=None,
+    panel_keys=None,
+    altitude_for_classes=400,
+    xlim=(0.0, 7.0),
+    ylim=(0.0, 7.0)
+):
+    """
+    Plot one panel per panel_key.
+
+    - If class_based==False:
+        panel_keys should be a list of altitudes (ints). Each panel shows df['fallspeed'] vs df[f'W_{alt}m'].
+        Default: [1000, 800, 400]
+
+    - If class_based==True:
+        panel_keys should be a list of class names. Each panel shows that class at altitude_for_classes:
+            df_only_class[class_name]['fallspeed'] vs df_only_class[class_name][f'W_{altitude_for_classes}m']
+        Default: first 3 keys from fct.custom_colors.
+
+    Returns (fig, axs).
+    """
+    # decide panel keys
+    if class_based:
+        if panel_keys is None:
+            panel_keys = list(custom_colors.keys())[:3]
+    else:
+        if panel_keys is None:
+            panel_keys = [1000, 800, 400]
+
+    n_panels = len(panel_keys)
+    fig, axsm = plt.subplots(1, n_panels, figsize=(5 * n_panels, 5), sharex=True, sharey=True)
+
+    # normalize axs to iterable list
+    if n_panels == 1:
+        axs = [axsm]
+    else:
+        axs = axsm.flatten()
+
+    # 1:1 line
+    x = np.linspace(0, 7, 100)
+    y = x
+
+    for i, (ax, key) in enumerate(zip(axs, panel_keys)):
+        ax.plot(x, y, linestyle='--', color='darkgrey')  # 1:1
+        ax.grid(True, ls=':')
+
+        # choose series depending on mode
+        if not class_based:
+            alt = key
+            x_series = df['fallspeed']
+            y_series = df[f'W_{alt}m']
+            color = cmap(i)
+            label = f"{alt} m"
+            ax.scatter(x_series, y_series, color=color, alpha=0.7,
+                       edgecolor=color, label=label)
+            masc_mean = x_series.mean(skipna=True)
+            mrr_mean = y_series.mean(skipna=True)
+            tot = int(y_series.dropna().shape[0])
+            ax.set_title(f"N={tot} @{alt} m", color=color, fontweight="bold")
+
+        else:
+            class_name = key
+            # guard against missing class
+            if (df_only_class is None) or (class_name not in df_only_class):
+                masc_mean = np.nan
+                mrr_mean = np.nan
+                tot = 0
+                ax.text(0.5, 0.5, f"No data for\n{class_name}", ha='center', va='center', transform=ax.transAxes)
+                color = cmap(i)
+            else:
+                x_series = df_only_class[class_name]['fallspeed']
+                y_series = df_only_class[class_name][f'W_{altitude_for_classes}m']
+                color = custom_colors.get(class_name, cmap(i))
+                ax.scatter(x_series, y_series, color=color, alpha=0.7, edgecolor=color, label=class_name)
+                masc_mean = x_series.mean(skipna=True)
+                mrr_mean = y_series.mean(skipna=True)
+                tot = int(y_series.dropna().shape[0])
+                ax.set_title(f"{class_name}: N={tot}".title(), color=color, fontweight="bold")
+
+        # small stats box (handles no-data gracefully)
+        if np.isfinite(masc_mean) and np.isfinite(mrr_mean):
+            stats_text = (f"MASC$_{{mean}}$: {masc_mean:.2f} m s$^{{-1}}$\n"
+                          f"MRR$_{{mean}}$: {mrr_mean:.2f} m s$^{{-1}}$")
+        else:
+            stats_text = "No data"
+
+        ax.text(0.7, 0.9, stats_text, transform=ax.transAxes, fontsize=11,
+                ha='center', va='center',
+                bbox=dict(boxstyle='round,pad=0.4', fc='white', ec='k', lw=1, alpha=0.8))
+
+        ax.set_xlabel(r"Fallspeed - MASC [m s$^{-1}$]")
+        if i == 0:
+            ax.set_ylabel(r"Fallspeed - MRR [m s$^{-1}$]")
+
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+
+        # small panel label if available
+        if i < len(fig_label):
+            ax.text(0.05, 0.95, fig_label[i], fontweight='bold',
+                    ha='center', va='center', transform=ax.transAxes)
+
+    plt.tight_layout()
+
+def get_ze_in_precip_event(df, ds):
+
+    slices = []
+    for end_time, start_time in df['start_time'].items():
+        t0 = start_time + pd.Timedelta(seconds=1)
+        t1 = end_time
+        # Select data from ds 
+        ds_subset = ds[['Ze', 'height']].sel(time=slice(t0, t1))
+
+        # # Add a new "interval" dimension with the end_time as its label
+        # ds_subset = ds_subset.expand_dims(interval=[pd.to_datetime(end_time)])
+
+        slices.append(ds_subset)
+
+    result = xr.concat(slices, dim='time')
+
+    return result
+
+def plt_fallspeed_distribution_by_class(df_only_class, binwidth=0.25,stat='percent', binrange=[0,7]):
+
+    fig, axsm = plt.subplots(1, 3, figsize=(15, 5, ), sharex=True, sharey=True)
+    axs = axsm.flatten()
+
+    for (i,ax), (class_name, color) in zip(enumerate(axs), custom_colors.items()):
+        sns.histplot(df_only_class[class_name]['fallspeed'], stat=stat, binwidth=binwidth, binrange=binrange, ax=ax, color=color, alpha=0.7, edgecolor=color )
+
+        ax.set(xlabel = "Fallspeed [m s$^{-1}$]")
+        ax.grid(True, ls=':')
+        ax.set_title(f"{class_name}".title(), color=color, fontweight='bold', )
+
+        ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
+
+    plt.tight_layout()
+
+    # plt.savefig(os.path.join(FIG_DIR, 'fallspeed', 'aggregate_graupel_mixed_pristine_precip_event.png'), format='png', bbox_inches='tight', dpi=300, transparent=True,)
+
+def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze):
+    cmap = cm.glasgow_r  # define the colormap
+    # extract all colors from the colormap
+    cmaplist = [cmap(i) for i in range(cmap.N)]
+    # force the first color entry to be white
+    cmaplist[0] = (255,255,255, 0.9)
+    # create the new map
+    cmap = LinearSegmentedColormap.from_list(
+    'Custom cmap', cmaplist, 14) # cmap.N
+    # define the bins and normalize
+    # bounds = np.linspace(0, 7e7, 11)
+    bounds = np.arange(0., 0.003, 0.0002)
+    norm = BoundaryNorm(bounds, cmap.N)
+
+    fig, axs = plt.subplots(
+                nrows=1, ncols=3,
+                figsize=(15,5), sharey=True, 
+                )
+    axs = np.atleast_2d(axs)    # safe even if n_cols=2
+        
+    for (i,ax), cat in zip(enumerate(axs.flatten()), ['aggregate', 'graupel', 'mixed']):
+                pcm = ax.pcolormesh(ze_bins, height_bins, H_ze_prob[cat], cmap=cmap, norm=norm) 
+
+                # title with raw counts
+                total = int(np.nansum(H_ze[cat]))
+                ax.set_title(f"{cat}\n(counts={total})".title(), fontweight='bold', color=custom_colors[cat])
+                ax.set_xlabel("Reflectivity [dBz]")
+
+                ax.grid(True, ls=':')
+                ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
+                if i == 0:
+                        ax.set_ylabel("Height [m]")
+
+
+    plt.tight_layout(rect=[0, 0, 0.9, 1])   # leave room for cbars
+
+    cax = fig.add_axes([0.89, 0.125 , 0.015, 0.75]) # left, bottom, width, height
+    fig.colorbar(pcm, cax=cax, orientation='vertical', label='Probability')
