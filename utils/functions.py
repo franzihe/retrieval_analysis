@@ -958,6 +958,8 @@ def test_and_return_dominant_sf_class(seg, sclass):
 
 def model(x, a, b):
     return a * x**b
+    # return (x/a)**(1/b)
+    
 
 def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1H", min_rate=0.1, altitudes=[400, 800, 1000]):
     if mode == "event":
@@ -1014,7 +1016,7 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
     # Convert snowfall increments to rate (mm/h)
     df_out["delta_h"] = df_out.index.to_series().diff().dt.total_seconds() / 3600 # Calculate time difference in hours
     df_out["rate_mm_h"] = df_out["Geonor"] / df_out["delta_h"] # Convert to mm/h rate
-    df_out = df_out[df_out["rate_mm_h"] >= min_rate] # limit Geonor precipitation to be above 0.1 mm/h
+    df_out[df_out["rate_mm_h"] < min_rate] = np.nan # limit Geonor precipitation to be above 0.1 mm/h
     df_out['start_time'] = df_out.index - pd.to_timedelta(df_out['delta_h'] * 3600, unit='sec')
 
     for alt in altitudes:
@@ -1031,7 +1033,7 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
     return df_out
 
 
-def plt_geonor_vs_ze_vs_precip_scatter(ylabels, class_based=False,  df=None, df_only_class=None, xlim=(0.09, 30), ylim_panel0=None, ylim_panel1=None):
+def plt_geonor_vs_ze_vs_precip_scatter(ylabels, class_based=False,  df=None, df_only_class=None, xlim=(0.09, 30), ylim_panel0=None, ylim_panel1=None, title=None):
 
     """
     Generalized routine to plot two scatter panels:
@@ -1076,28 +1078,32 @@ def plt_geonor_vs_ze_vs_precip_scatter(ylabels, class_based=False,  df=None, df_
     x = np.linspace(0, 50, 100)
     y = x
 
-    bb = (fig.subplotpars.left, fig.subplotpars.top+0.02, 
+    bb = (fig.subplotpars.left, fig.subplotpars.bottom-0.21, 
         fig.subplotpars.right-fig.subplotpars.left,.1)
+    
     for i, ax in enumerate(axs.flatten()):
         ax.grid(True, ls=':')
         ax.set_xscale('log')
         ax.set_yscale('log')
         ax.text(0.045, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
         if i == 0: 
-            ax.plot(x_line, y_line, color='black', label="Matrosov Z = 56 S$^{1.2}$")
+            ax.plot(x_line, y_line, color='black', label="Matrosov$_{a}$: Z = 56 S$^{1.2}$", linestyle='solid')
+            ax.plot(x_line, 134 * x_line**1.25, color='black', label = "Bracci$_{a}$: Z = 134 S$^{1.25}$", linestyle = 'dotted')
+            ax.plot(x_line, 107.4 * x_line**1.67, color='black', label = "Nakai$_{a}$: Z = 107.4 S$^{1.67}$", linestyle = 'dashed')
+            ax.plot(x_line, 227.4 * x_line**1.67, color='black', label = "Nakai$_{g}$: Z = 227.4 S$^{1.67}$", linestyle = 'dashdot')
+            ax.plot(x_line, 252 * x_line**2.03, color='black', label = "Pu$_{g}$: Z = 252 S$^{2.03}$", linestyle = (0, (3, 1, 1, 1)))
             ax.set(xlabel='Geonor [mm h$^{-1}$]', ylabel=ylabels[0], xlim=xlim, )
             if ylim_panel0: ax.set_ylim(ylim_panel0)
             ax.legend(bbox_to_anchor=bb, mode="expand", loc="lower left",
-                ncol=5, borderaxespad=0., bbox_transform=fig.transFigure)
+                ncol=3, borderaxespad=0., bbox_transform=fig.transFigure)
 
         else:
             ax.plot(x, y, linestyle='--', color='darkgrey')
             ax.set(xlabel='Geonor [mm h$^{-1}$]', ylabel=ylabels[1], xlim=xlim, ylim=(0.09, 50),  )
             if ylim_panel1: ax.set_ylim(ylim_panel1)
 
-        
-
-    plt.tight_layout()
+    fig.suptitle(f"{title}", fontweight ="bold",y=0.92)  
+    plt.tight_layout(rect=[0,0,1,1])
 
 
 def plt_masc_vs_mrr_fallspeed(
@@ -1107,7 +1113,8 @@ def plt_masc_vs_mrr_fallspeed(
     panel_keys=None,
     altitude_for_classes=400,
     xlim=(0.0, 7.0),
-    ylim=(0.0, 7.0)
+    ylim=(0.0, 7.0),
+    title=None
 ):
     """
     Plot one panel per panel_key.
@@ -1203,8 +1210,8 @@ def plt_masc_vs_mrr_fallspeed(
         if i < len(fig_label):
             ax.text(0.05, 0.95, fig_label[i], fontweight='bold',
                     ha='center', va='center', transform=ax.transAxes)
-
-    plt.tight_layout()
+    fig.suptitle(f"{title}", fontweight ="bold",y=0.92)  
+    plt.tight_layout(rect=[0,0,1,1])
 
 def get_ze_in_precip_event(df, ds):
 
@@ -1224,7 +1231,7 @@ def get_ze_in_precip_event(df, ds):
 
     return result
 
-def plt_fallspeed_distribution_by_class(df_only_class, binwidth=0.25,stat='percent', binrange=[0,7]):
+def plt_fallspeed_distribution_by_class(df_only_class, binwidth=0.25,stat='percent', binrange=[0,7], title=None):
 
     fig, axsm = plt.subplots(1, 3, figsize=(15, 5, ), sharex=True, sharey=True)
     axs = axsm.flatten()
@@ -1232,13 +1239,13 @@ def plt_fallspeed_distribution_by_class(df_only_class, binwidth=0.25,stat='perce
     for (i,ax), (class_name, color) in zip(enumerate(axs), custom_colors.items()):
         sns.histplot(df_only_class[class_name]['fallspeed'], stat=stat, binwidth=binwidth, binrange=binrange, ax=ax, color=color, alpha=0.7, edgecolor=color )
 
-        ax.set(xlabel = "Fallspeed [m s$^{-1}$]")
+        ax.set(xlabel = "Fallspeed [m s$^{-1}$]", ylim=[0, 35])
         ax.grid(True, ls=':')
         ax.set_title(f"{class_name}".title(), color=color, fontweight='bold', )
 
         ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
-
-    plt.tight_layout()
+    fig.suptitle(f"{title}", fontweight ="bold",y=0.92)  
+    plt.tight_layout(rect=[0,0,1,1])
 
     # plt.savefig(os.path.join(FIG_DIR, 'fallspeed', 'aggregate_graupel_mixed_pristine_precip_event.png'), format='png', bbox_inches='tight', dpi=300, transparent=True,)
 
@@ -1280,3 +1287,45 @@ def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze):
 
     cax = fig.add_axes([0.89, 0.125 , 0.015, 0.75]) # left, bottom, width, height
     fig.colorbar(pcm, cax=cax, orientation='vertical', label='Probability')
+
+def plt_precip_scatter_literature(df, title=None):
+    equations = {"Matrosov_a": "Z = 56 S$^{1.2}$",
+             "Bracci_a": "Z = 134 S$^{1.25}$",
+             "Nakai_a": "Z = 107.4 S$^{1.67}$",
+             "Nakai_g": "Z = 227.4 S$^{1.67}$",
+             "Pu_g" : "Z = 252 S$^{2.03}$"}
+
+    fig, axsm = plt.subplots(2, 3, figsize=(15, 10, ), sharex=True, sharey=True)
+    axs = axsm.flatten()
+
+    for (i,ax), (name, eq) in zip(enumerate(axs), equations.items()):
+        if i == 0 or i==1 or i==2:
+            color = custom_colors['aggregate'] 
+            xval = df['aggregate']['rate_mm_h']
+            yval = df['aggregate'][f'{name}_400_mm_h']
+            ylabel = "S$_{aggregate}$ [mm h$^{-1}$]"
+        else:
+            color = custom_colors['graupel'] 
+            xval = df['graupel']['rate_mm_h']
+            yval = df['graupel'][f'{name}_400_mm_h']
+            ylabel = "S$_{graupel}$ [mm h$^{-1}$]"
+        ax.scatter(xval, yval, color=color, alpha=0.7,  edgecolor=color)
+
+
+        ax.set(xlabel = "Geonor [mm h$^{-1}$]", ylabel=ylabel, xlim=[0.009, 40], ylim=[0.009,40])
+        ax.grid(True, ls=':')
+        ax.set_title(f"{name.split('_')[0]}: {eq}".title(), color=color, fontweight='bold', )
+
+        ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+
+        # 1-1 line
+        x = np.linspace(0, 40, 100)
+        y = x
+        ax.plot(x, y, linestyle='--', color='darkgrey')
+
+    axs[-1].set_visible(False)
+
+    fig.suptitle(f"{title}", fontweight ="bold",y=0.96)  
+    plt.tight_layout(rect=[0,0,1,1])
