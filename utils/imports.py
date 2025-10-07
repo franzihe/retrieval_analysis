@@ -16,7 +16,7 @@ import dask.array as da
 import bz2
 from urllib.parse import urlparse, parse_qs
 from bs4 import BeautifulSoup   # conda install -c anaconda beautifulsoup4 
-from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap, Normalize
 import requests
 import time
 import seaborn as sns
@@ -25,4 +25,8 @@ from windrose import WindroseAxes
 from matplotlib.patches import Wedge
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, least_squares
+from scipy.stats import linregress
+from math import pi
+from sklearn.metrics import r2_score
+from sklearn.preprocessing import MinMaxScaler

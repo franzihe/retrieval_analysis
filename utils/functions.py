@@ -1,7 +1,7 @@
 # from imports import *
 # from imports import requests, BeautifulSoup
 # import imports
-from imports import (xr, np,datetime, datetime,cm,plt,DateFormatter, pd,da, BeautifulSoup,BoundaryNorm, LinearSegmentedColormap,requests,date2num,sns)
+from imports import (xr, np,datetime, datetime,cm,plt,DateFormatter, pd,da, BeautifulSoup,BoundaryNorm, LinearSegmentedColormap,requests,date2num,sns, least_squares, r2_score, MinMaxScaler, Normalize)
 fig_label = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)', '(g)', '(h)', '(i)', '(j)', '(k)', '(l)', '(m)', '(n)', '(o)', '(p)', '(q)', '(r)', '(s)', '(t)', '(u)', '(v)', '(w)', '(x)', '(y)', '(z)',
              '(aa)', '(bb)', '(cc)', '(dd)', '(ee)', '(ff)', '(gg)', '(hh)', '(ii)', '(jj)', '(kk)', '(ll)', '(mm)', '(nn)', '(oo)', '(pp)', '(qq)', '(rr)', '(ss)', '(tt)', '(uu)', '(vv)', '(ww)', '(xx)', '(yy)', '(zz)']
 
@@ -743,7 +743,8 @@ def plot_snowflake_classes(ax, ds):
     markers = ['*', '^',  'h','o',  's', 'd']
     
     for y_pos, (name, level) in enumerate(particle_classes, 1) :
-        data = ds[name].dropna('time')
+        # data = ds[name].dropna('time')
+        data = (ds['most_common_class'].where(ds['most_common_class'] == name)).dropna('time')
         ax.plot(date2num(data['time']), 
                 np.full(len(data['time']), level),
                 marker=markers[y_pos - 1], linestyle='None',
@@ -977,16 +978,20 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
         raise ValueError("mode must be 'event' or 'fixed'")
     
     # Loop over segments
-    sums, means, sclass, fs = [], [], [], []
+    sums, means, sclass, mascdb, diameter, velocity, mass = [], [], [], [], [], [], []
+    dt = segment_bounds.to_series().diff().dt.total_seconds()
     for i in range(len(segment_bounds)):
         if i == 0:
             seg = df_sum[:segment_bounds[0]]
             seg_m = df_mean[:segment_bounds[0]]
             seg_sf = sf_class[:segment_bounds[0]]
+            delta_h = dt.loc[:segment_bounds[0]]
+
         else:
             seg = df_sum.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
             seg_m = df_mean.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
             seg_sf = sf_class.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
+            delta_h = dt.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
 
         # filter: remove warm segments (>2 °C)
         all_T = seg_m['air_temperature'].dropna()
@@ -997,20 +1002,39 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
 
         sums.append(seg.sum(numeric_only=True, min_count=1))
         means.append(seg_m.mean(numeric_only=True, skipna=True))
+        mascdb.append(seg_sf[['fallspeed', 'flake_Dmax', 'gan3d_mass']].mean(numeric_only=True, skipna=True))
+        diameter.append(seg_sf['flake_Dmax'].count())
+        velocity.append(seg_sf['fallspeed'].count())
+        mass.append(seg_sf['gan3d_mass'].count())
+        
 
         if len(seg_sf) != 0:
             sclass = test_and_return_dominant_sf_class(seg_sf['snowflake_class_name'], sclass)
-            fs.append(seg_sf['fallspeed'].mean(numeric_only=True, skipna=True))
+            if i== 0:
+                psd = find_psd_in_timestep(seg_sf, delta_h, index=segment_bounds[i])
+            else:
+                ds_psd = find_psd_in_timestep(seg_sf, delta_h, index=segment_bounds[i])
+                psd = xr.concat([psd, ds_psd], dim="time")
+
         else:
             sclass.append(np.nan)
-            fs.append(np.nan)
+            if i== 0:
+                psd = find_psd_in_timestep(seg_sf, delta_h, index=segment_bounds[i])
+            else:
+                ds_psd = find_psd_in_timestep(seg_sf, delta_h, index=segment_bounds[i])
+                psd = xr.concat([psd, ds_psd], dim="time")
+            
 
         
     # Combine into one Dataframe with all values
     df_out = pd.concat([pd.DataFrame(sums).set_index(segment_bounds),
                         pd.DataFrame(means).set_index(segment_bounds),
                         pd.DataFrame({"snowflake_class_name":sclass}).set_index(segment_bounds), 
-                        pd.DataFrame({"fallspeed":fs}).set_index(segment_bounds)], axis=1)
+                        pd.DataFrame(mascdb).set_index(segment_bounds),
+                        pd.DataFrame({"count_fallspeed": velocity, "count_flake_Dmax": diameter, "count_gan3d_mass": mass}).set_index(segment_bounds)
+                        # pd.DataFrame({"Dmax":dm}).set_index(segment_bounds),
+                        # pd.DataFrame({"particle_mass":mass}).set_index(segment_bounds),
+                        ], axis=1)
     df_out.rename(columns={"precipitation":"Geonor",}, inplace=True)
 
     # Convert snowfall increments to rate (mm/h)
@@ -1030,7 +1054,64 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
         # Matrosov from Ze_sum
         df_out[f'Matrosov_from_ze_sum_{alt}'] = ((df_out[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_out["delta_h"])  # convert rate to mm
 
-    return df_out
+    # df_out.index.name = 'time'
+    # ds_out = xr.concat([df_out.to_xarray(), psd], "time")
+
+    return df_out, psd
+
+def find_psd_in_timestep(seg_sf, delta_h, index):
+    # Define diameter bins. Choose logarithmic (geometric) bins in diameter 
+    bin_edges = np.geomspace(0.0003, 0.03, 25) # Return numbers spaced evenly on a log scale (a geometric progression). 25 bins
+    dD = np.diff(bin_edges)
+    bin_centers = bin_edges[:-1] + dD/2
+
+    # Assign particles to bins
+    bin_idx = np.digitize(seg_sf['flake_Dmax'], bin_edges) - 1 # Return the indices of the bins to which each value in input array belongs
+
+    # Compute mean v and m per diameter bin
+    v_bin = np.array([ np.nanmean(seg_sf['fallspeed'][bin_idx==i]) if np.any(bin_idx==i) else np.nan for i in range(len(bin_centers)) ]) # fall speed per bin [m/s]
+    m_bin = np.array([np.nanmean(seg_sf['gan3d_mass'][bin_idx==i]) if np.any(bin_idx==i) else np.nan for i in range(len(bin_centers))]) # mass per particle for each bin
+
+    # count particles per diameter bin
+    counts, _ = np.histogram(seg_sf['flake_Dmax'], bins=bin_edges)
+
+
+    # Convert counts to # concentration
+    # effective area
+    A_eff = 3.1e-3 # trigger cross-section (m^2). default 3100 mm^2
+    T_sample = delta_h # seconds
+
+
+    # number concentration per bin (particles m^-3)
+    N_bin = np.full_like(counts, np.nan, dtype=float)
+    valid = (v_bin > 0) 
+    N_bin[valid] = counts[valid] / (v_bin[valid] * A_eff * T_sample.values)
+
+    # density per unit diameter (particles m^-3 per m)
+    n_per_m = N_bin / dD # per meter
+
+    # Compute snowfall rate in that delta_h
+    rho_w = 1000. # liquid water density [kg/m^3]
+    if np.all(np.isnan(m_bin * v_bin * N_bin * dD)):
+        S_m_per_h = np.nan
+    else:
+        S_m_per_h = (3600.0 / rho_w) * np.nansum(m_bin * v_bin * N_bin * dD) # mm/h
+
+    # df_psd = pd.DataFrame({'D_center_m': bin_centers, 'dD_m': dD, 'counts':counts, 'v_bin_m_s':v_bin, 'N_bin_m3':N_bin, 'n_per_m':n_per_m,})
+    dataset = xr.Dataset({"counts": (["time", "bin"], [counts]), 
+                        # "bin_edges": (["time", "bin"],[ bin_edges]),
+                          "v_bin_m_s": (["time", "bin"], [v_bin]),
+                          "m_bin_kg":(["time","bin"], [m_bin]),
+                        #   "D_center_m": (["time", "bin"], [dD]),
+                          "N_bin_m3": (["time", "bin"], [N_bin]),
+                          "n_per_m": (["time", "bin"], [n_per_m]),
+                          "S_m_per_h": (["time"], [S_m_per_h]),}, 
+                          coords={"time": [index], 
+                                  "bin": bin_centers,
+                                  "dD":("bin", dD) # widths as coordinate
+                                  })
+    return dataset
+
 
 
 def plt_geonor_vs_ze_vs_precip_scatter(ylabels, class_based=False,  df=None, df_only_class=None, xlim=(0.09, 30), ylim_panel0=None, ylim_panel1=None, title=None):
@@ -1213,14 +1294,15 @@ def plt_masc_vs_mrr_fallspeed(
     fig.suptitle(f"{title}", fontweight ="bold",y=0.92)  
     plt.tight_layout(rect=[0,0,1,1])
 
-def get_ze_in_precip_event(df, ds):
+def get_ds_in_precip_event(df, ds):
 
     slices = []
     for end_time, start_time in df['start_time'].items():
         t0 = start_time + pd.Timedelta(seconds=1)
         t1 = end_time
         # Select data from ds 
-        ds_subset = ds[['Ze', 'height']].sel(time=slice(t0, t1))
+        # ds_subset = ds[['Ze', 'height']].sel(time=slice(t0, t1))
+        ds_subset = ds.sel(time=slice(t0, t1))
 
         # # Add a new "interval" dimension with the end_time as its label
         # ds_subset = ds_subset.expand_dims(interval=[pd.to_datetime(end_time)])
@@ -1231,20 +1313,28 @@ def get_ze_in_precip_event(df, ds):
 
     return result
 
-def plt_fallspeed_distribution_by_class(df_only_class, binwidth=0.25,stat='percent', binrange=[0,7], title=None):
+def plt_fallspeed_distribution_by_class(df_only_class, binwidth=0.25,stat='percent', binrange_v=[0,7], binrange_m=[0, 0.0525], title=None):
 
-    fig, axsm = plt.subplots(1, 3, figsize=(15, 5, ), sharex=True, sharey=True)
+    fig, axsm = plt.subplots(2, 3, figsize=(15, 10, ), sharex=False, sharey=False)
     axs = axsm.flatten()
 
-    for (i,ax), (class_name, color) in zip(enumerate(axs), custom_colors.items()):
-        sns.histplot(df_only_class[class_name]['fallspeed'], stat=stat, binwidth=binwidth, binrange=binrange, ax=ax, color=color, alpha=0.7, edgecolor=color )
+    for (i,ax), (class_name) in zip(enumerate(axs), ['aggregate', 'graupel', 'mixed']):
+        sns.histplot(df_only_class[class_name]['fallspeed'], stat=stat, binwidth=binwidth, binrange=binrange_v, ax=ax, color=custom_colors[class_name], alpha=0.7, edgecolor=custom_colors[class_name] )
+        sns.histplot(df_only_class[class_name]['gan3d_mass']/1e-3, stat='percent', binwidth=0.0025, binrange=binrange_m, ax=axsm[1,i], color=custom_colors[class_name], alpha=0.7, edgecolor=custom_colors[class_name] )
+        
+        
+        
+        
+        ax.set_title(f"{class_name}".title(), color=custom_colors[class_name], fontweight='bold', )
 
-        ax.set(xlabel = "Fallspeed [m s$^{-1}$]", ylim=[0, 35])
+    for i,ax in enumerate(axs): 
         ax.grid(True, ls=':')
-        ax.set_title(f"{class_name}".title(), color=color, fontweight='bold', )
-
         ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
-    fig.suptitle(f"{title}", fontweight ="bold",y=0.92)  
+        if i == 0 or i == 1 or i==2:
+            ax.set(xlabel = "Fallspeed [m s$^{-1}$]", ylim=[0, 35])
+        else:
+            ax.set(xlabel = "Particle mass [g]", ylim=[0,35])
+    fig.suptitle(f"{title}", fontweight ="bold",y=0.98)  
     plt.tight_layout(rect=[0,0,1,1])
 
     # plt.savefig(os.path.join(FIG_DIR, 'fallspeed', 'aggregate_graupel_mixed_pristine_precip_event.png'), format='png', bbox_inches='tight', dpi=300, transparent=True,)
@@ -1329,3 +1419,310 @@ def plt_precip_scatter_literature(df, title=None):
 
     fig.suptitle(f"{title}", fontweight ="bold",y=0.96)  
     plt.tight_layout(rect=[0,0,1,1])
+
+# Local slope (exponent b(D)) from quadratic fit
+def local_exponent(D, coeffs):
+    c2, c1, c0 = coeffs
+    return c1 + 2 * c2 * np.log10(D)
+
+def find_dimension_fits(df, variable):
+    D = df['flake_Dmax']
+    m = df[variable] # mean variable value per diameter bin
+
+
+    valid = (D > 0) & (m > 0)
+    D, m = D[valid], m[valid]
+
+    if len(D) != 0:
+        logD = np.log10(D)
+        logm = np.log10(m)
+
+        idx = np.argsort(logD)
+        logD_sorted = logD[idx]
+
+        # variable-dimension fit
+        # linear fit (deg=1)
+        lin_coeff = np.polyfit(logD, logm, 1) # slope, intercept
+        b_lin, a_lin = lin_coeff
+        log_lin_fit = np.polyval(lin_coeff, logD_sorted)
+        # quadratic fit (deg=2)
+        quad_coeff = np.polyfit(logD, logm, 2) # c2, c1, c0
+        c2, c1, c0 = quad_coeff
+        log_quad_fit = np.polyval(quad_coeff, logD_sorted)
+
+        b_local = local_exponent(D, quad_coeff)
+    
+    return logD_sorted, log_lin_fit, log_quad_fit, b_local, b_lin
+
+def plt_dimension_fits(df, variable, logD, log_lin_fit, log_quad_fit, b_local, b_lin, var_name, ylabel):
+    D= df['flake_Dmax']#.values # bin centers
+    m = df[variable]#.values # mean variable value per diameter bin
+    
+    counts = (df[['count_flake_Dmax', f'count_{variable}']])
+    counts = counts.min(axis=1, skipna=True, numeric_only=True) # find the minimum amount of flakes within time bin of the two given values
+    area = counts
+
+    # normalize scatter sizes (so sizes are comparable across plots)
+    scaler = MinMaxScaler(feature_range=(20, 200))  # size range
+    s_scaled = scaler.fit_transform(area.values.reshape(-1, 1)).ravel()
+
+    if variable == 'gan3d_mass':
+        bounds = np.arange(0, 37.5, 2.5)
+    elif variable == 'fallspeed':
+        bounds = np.arange(0, 525, 25)
+    norm = BoundaryNorm(bounds, ncolors=256, extend='max')
+
+    fig, ax = plt.subplots(1, 2, figsize=(12,5), )
+
+    # (a) log-log fit
+    sc = ax[0].scatter(D*1e3, m, label="Data", c=counts,cmap='Grays', norm=norm, s=s_scaled, alpha=0.7, edgecolor='k')
+    ax[0].plot(10**logD*1e3, 10**log_lin_fit, 'b--', label=f'linear fit: b ={b_lin:.2f}')
+    ax[0].plot(10**logD*1e3, 10**log_quad_fit, 'r-', label=f'quadratic fit')
+
+    ax[0].set_xlabel("D [mm]")
+    ax[0].set_ylabel(ylabel)
+    ax[0].set_title(f"{var_name}-dimension fits")
+    # first legend: fits
+    legend1 = ax[0].legend(loc="upper left")
+    
+    # add colorbar for counts
+    cbar=fig.colorbar(sc, ax=ax[0], boundaries=bounds, ticks=bounds[::2], spacing="uniform", format="%.0f")
+    cbar.set_label("Counts")
+    # cbar.ax.set_yticklabels((bounds[::2]))
+    ax[0].grid(True, ls=':')
+    # ax[0].set_yscale('log')
+    
+
+
+    # (b) local exponent vs D
+    idx = np.argsort(b_local)
+    b_sorted = b_local[idx]
+    D_valid = D[b_sorted.index]
+
+    ax[1].plot(D_valid*1e3, b_sorted, 'ro-', label='quadratic slope b(D)')
+    ax[1].hlines(b_lin, D.min()*1e3, D.max()*1e3, colors='b', linestyle='--', label=f'linear fit: b ={b_lin:.2f}')
+    ax[1].set_xlabel("D [mm]")
+    ax[1].set_ylabel("Exponent b")
+    ax[1].set_title("Diameter-dependent exponent")
+    ax[1].legend()
+    ax[1].grid(True, ls=':')
+
+    plt.tight_layout()
+
+def find_dimension_fits_sigma(df, ds):
+    ### find the sigma-dimension relationship from reflectivity
+    # PSD
+    n_per_m_all = ds['n_per_m'].values 
+    # n_per_m_all [particles m^-3 per m]  -> n_per_mm_all [particles m^-3 per mm]
+    n_per_mm_all = n_per_m_all / 1000.
+    # observed reflectivity
+    Z_obs_all = df['Ze_linear_sum_400'].values
+
+    dD = ds['dD'] #difference between bin_edges
+    dD_mm = dD.values*1000.     # convert to mm
+
+    D = ds['bin']
+    D_mm = D.values*1000.    #convert to mm
+
+    # Mask invalid time steps (any NaN in PSD or Z)
+    valid = (~np.isnan(Z_obs_all)) & (~np.isnan(n_per_mm_all).all(axis=1))
+    n_per_mm_all = n_per_mm_all[valid, :]
+    Z_obs_all = Z_obs_all[valid]
+
+    # Replace Nans in PSD with 0 (assume no particles in that bin)
+    n_per_mm_all = np.nan_to_num(n_per_mm_all, nan=0.0)
+
+    # Find inital guess for a0 and b0
+    logD_list, logsigma_list = [], []
+    for i in range(len(Z_obs_all)):
+        n = n_per_mm_all[i, :] # since n can be zero the nansum in sigma_pseudo will return -inf, hence not only nan but alos inf have to be masked
+        
+        Z = Z_obs_all[i]
+
+        # approximate sigma 
+        sigma_pseudo = Z * (n *dD_mm) / np.nansum(n*dD_mm)
+        logD_list.append(np.log10(D_mm))   # logD = np.log10(D)
+        logsigma_list.append(np.log10(sigma_pseudo))
+
+    logD = np.concatenate(logD_list)
+    logs = np.concatenate(logsigma_list)
+
+    idx = np.argsort(logD)
+    logD_sorted = logD[idx]
+
+    mask = (~np.isnan(logD)) & (~np.isnan(logs)) & (~np.isinf(logs))
+    logD, logs = logD[mask], logs[mask]
+
+    # linear fit (deg=1)
+    lin_coeff = np.polyfit(logD, logs, 1) # slope, intercept
+    b0_lin, a0_lin = lin_coeff
+    # print(10**a0_lin, b0_lin)
+
+    # quadratic fit (deg=2)
+    quad_coeff = np.polyfit(logD, logs, 2) # c2, c1, c0
+    c2, c1, c0 = quad_coeff
+    b_local = local_exponent(D_mm, quad_coeff)
+    def residuals(params):
+        a, b = params
+        # compute PSD contribution X_t(b) for each time sample Z_pred(t) = a * sum(D^b N dD)
+        X = np.nansum((D_mm**b)[None,:] * n_per_mm_all * dD_mm[None,:], axis=1)
+        Z_pred = a * X
+        return Z_pred - Z_obs_all   # return vector of residuals
+
+    p0 = (10**a0_lin, b0_lin) # initial guess for the parameters the solver will try to fit
+    # starting guess for cross-section scaling: a_sigma = 1e-6, 
+    #starting guess for the exponent: b_sigma=2
+
+    # least_squares minimizes min sum(Z_pred - Z_obs)^2
+    res = least_squares(residuals, x0=np.array(p0), )#bounds=([0.0, -10], [np.inf, 10])) # bounds=([lower_a, lower_b], [upper_a, upper_b]) defines the feasible region
+    # # a_sigma >= 0 (backscatter cross section can't be negative)
+    # # b_sigma [-10,10] prevent numerical instability
+    a_lin, b_lin = res.x
+    # print(f'sigma = {10**a_lin:.2f} D$^{b_lin:.2f}$')
+
+    # 2. Compute fitted curve and local exponent
+    # Fitted curve in log-log space
+    log_lin_fit = np.log10(a_lin * (D_mm**b_lin))
+    log_quad_fit = np.polyval(quad_coeff, np.log10(D_mm))
+
+    return logD_sorted, log_lin_fit, log_quad_fit, b_local, b_lin, a_lin
+
+
+def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_lin_z):
+    a_lin = a_lin_z
+    b_lin = b_lin_z
+    b_local = b_local_z
+    D_mm = ds['bin'].values*1000
+    n_per_m_all = ds['n_per_m'].values
+    dD_mm = ds['dD'].values * 1000
+    Z_obs_all = df['Ze_linear_sum_400'].values
+
+    # linear fit predicted Z (a*D^b)
+    Z_pred_lin = a_lin * np.nansum((D_mm**b_lin)[None,:] * n_per_m_all * dD_mm[None,:], axis=1)
+
+    # quadratic fit
+    sigma_quad = 10**log_quad_fit_z    # σ(D) per bin
+    Z_pred_quad = np.nansum(sigma_quad[None, :] * n_per_m_all *dD_mm[None, :], axis=1)
+
+    mask = (~np.isnan(Z_obs_all)) & (~np.isnan(Z_pred_lin)) & (~np.isnan(Z_pred_quad))
+    Z_obs_all, Z_pred_lin, Z_pred_quad = Z_obs_all[mask], Z_pred_lin[mask], Z_pred_quad[mask]
+    r2_lin = r2_score(Z_obs_all, Z_pred_lin)
+    r2_quad = r2_score(Z_obs_all, Z_pred_quad)
+
+    # Scatter plot 
+    fig, ax = plt.subplots(1, 3, figsize=(18,5), )
+    ax[0].scatter(Z_obs_all, Z_pred_lin, alpha=0.5, color='b', label=f'linear fit: b ={b_lin:.2f}, R²={r2_lin:.3f}')
+    ax[0].scatter(Z_obs_all, Z_pred_quad, alpha=0.5, color='r', label=f'quadratic fit: R²={r2_quad:.3f}')
+    # 1:1 line
+    x = np.linspace(0, 10e4, 100)
+    y = x
+    ax[0].plot(x, y, linestyle='--', color='darkgrey')  # 1:1
+
+    ax[0].set_xlabel("Observed Z [mm$^6$ m$^{-3}$]")
+    ax[0].set_ylabel("Predicted Z [mm$^6$ m$^{-3}$]")
+    ax[0].set_title("Fit performance")
+    ax[0].set_yscale('log')
+    ax[0].legend()
+    ax[0].grid(True, ls=':')
+
+    # (b) Residuals (Observed - Predicted)
+    res_lin = Z_obs_all - Z_pred_lin
+    res_quad = Z_obs_all - Z_pred_quad
+
+    ax[1].scatter(Z_obs_all, res_lin, alpha=0.5, color='b', label=f'linear residuals')
+    ax[1].scatter(Z_obs_all, res_quad, alpha=0.5, color='r', label=f'quadratic residudals') # residuals mostly negative at large Z, that means the model systematically underestimates for large reflectivity.
+    ax[1].axhline(0, color="k", ls="--")
+    ax[1].set_xlabel("Observed Z [mm$^6$ m$^{-3}$]")
+    ax[1].set_ylabel("Residual (Obs - Pred)")
+    ax[1].set_title("Residuals vs Observed Z")
+    ax[1].legend()
+    ax[1].grid(True, ls=":")
+
+    # (b) local exponent vs D
+    # sort D for smooth plotting
+    idx = np.argsort(D_mm)
+    D_sorted = D_mm[idx]    # bin center
+    b_sorted = b_local[idx]
+
+    ax[2].plot(D_sorted, b_sorted, 'ro-', label='quadratic slope b(D)')
+    ax[2].hlines(b_lin, D_sorted.min(), D_sorted.max(), colors='b', linestyle='--', label=f'linear fit: b ={b_lin:.2f}')
+    ax[2].set_xlabel("D [mm]")
+    ax[2].set_ylabel("Exponent b")
+    ax[2].set_title("Diameter-dependent exponent")
+    ax[2].legend()
+    ax[2].grid(True, ls=':')
+
+    for axs in ax[:2]:
+        axs.set_xscale('log')
+        # axs.set_yscale('log')
+    
+
+    plt.tight_layout()
+
+
+
+
+def apply_timeoffset_to_df(df, ds):
+    # Drop rows where there is no fallspeed registered
+    df = df[df['fallspeed'].notna()]
+    seconds_to_subtract = 400 / df['fallspeed']
+
+    # Convert seconds into timedeltas
+    timedeltas = pd.to_timedelta(seconds_to_subtract, unit='sec')
+    # convert to minutes as a float, round, and then convert back to timedelta64[m]
+    rounded_td = (timedeltas / np.timedelta64(1,'m')).round().astype('timedelta64[m]')
+
+    # subtract from index
+    df['shifted_time_end'] = df.index - rounded_td
+
+    df_sum_offset = ds[['Matrosov_a_400', 'Bracci_a_400', 'Nakai_a_400', 'Nakai_g_400', 'Pu_g_400',
+                'Matrosov_a_800', 'Bracci_a_800', 'Nakai_a_800', 'Nakai_g_800', 'Pu_g_800',
+                'Matrosov_a_1000', 'Bracci_a_1000', 'Nakai_a_1000', 'Nakai_g_1000', 'Pu_g_1000',
+                'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
+    df_sum_offset.rename(columns={'Ze_linear_400': 'Ze_linear_sum_400', 'Ze_linear_800': 'Ze_linear_sum_800', 'Ze_linear_1000': 'Ze_linear_sum_1000'}, inplace=True)
+
+    df_mean_offset = ds[['Ze_400m', 'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000', 'W_400m', 'W_800m', 'W_1000m']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
+    df_mean_offset.rename(columns={'Ze_linear_400': 'Ze_linear_mean_400', 'Ze_linear_800': 'Ze_linear_mean_800', 'Ze_linear_1000': 'Ze_linear_mean_1000'}, inplace=True)
+
+    for alt in [400, 800, 1000]:
+        df_mean_offset[f'W_{alt}m'] = df_mean_offset[f'W_{alt}m']*(-1)
+
+    # Limit the fallspeed from MRR to "realistic values"
+    for alt in [400, 800, 1000]:
+        df_mean_offset[f'W_{alt}m'][df_mean_offset[f'W_{alt}m'] > 7.] = np.nan
+        df_mean_offset[f'W_{alt}m'][df_mean_offset[f'W_{alt}m'] <= 0.2] = np.nan
+
+    
+    sums = []
+    means= []
+    for i in range(len(df)-1):
+        seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i+1]]
+        seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i+1]]
+        
+    
+        # print(df.index[i], seg)
+        sums.append(seg.sum(numeric_only=True, min_count=1))
+        means.append(seg_m.mean(numeric_only=True, skipna=True))
+
+    df_offset = pd.concat([df[['shifted_time_end', 'Geonor', 'air_temperature', 'wind_direction', 'wind_speed', 'snowflake_class_name', 'fallspeed', 'flake_Dmax', 'gan3d_mass' ,'delta_h', 'rate_mm_h', 'count_fallspeed', 'count_flake_Dmax', 'count_gan3d_mass']],
+                                    pd.DataFrame(sums).set_index(df.index[1:]), 
+                                    pd.DataFrame(means).set_index(df.index[1:]), ], axis=1)# df['shifted_time_end'][1:].reset_index(drop=True)], axis=1)
+
+    # limit Geonor precipitation to be above 0.1 mm/h
+    df_offset = df_offset[df_offset["rate_mm_h"] >= 0.1]
+    df_offset['start_time'] = df_offset.index - pd.to_timedelta(df_offset['delta_h'] * 3600, unit='sec')
+
+
+    for alt in [400, 800, 1000]:
+        # Compute Z from linear sums
+        # Compute safely: return NaN for invalid values
+        df_offset[f'Z_from_linear_sum_{alt}'] = df_offset[f'Ze_linear_sum_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
+        df_offset[f'Z_from_linear_mean_{alt}'] = df_offset[f'Ze_linear_mean_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
+
+        for name in ["Matrosov_a", "Bracci_a", "Nakai_a", "Nakai_g", "Pu_g"]:
+            df_offset[f"{name}_{alt}_mm_h"] = df_offset[f"{name}_{alt}"] / df_offset["delta_h"]
+
+
+        # Calculate Matrosov based on Ze_sum
+        df_offset[f'Matrosov_from_ze_sum_{alt}'] = ((df_offset[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_offset["delta_h"])  # convert rate to mm
+    return df_offset
