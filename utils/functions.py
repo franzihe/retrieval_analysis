@@ -1056,6 +1056,12 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
 
     # df_out.index.name = 'time'
     # ds_out = xr.concat([df_out.to_xarray(), psd], "time")
+    
+    # in addition in the dataframe fallspeed has to be present to adjust for the timing for the reflectivity
+    df_out = df_out[df_out['fallspeed'].notna()]
+    df_out.index
+
+    psd = psd.sel(time=df_out.index)
 
     return df_out, psd
 
@@ -1428,25 +1434,47 @@ def local_exponent(D, coeffs):
 def find_dimension_fits(df, variable):
     D = df['flake_Dmax']
     m = df[variable] # mean variable value per diameter bin
+    counts = (df[['count_flake_Dmax', f'count_{variable}']])
+    counts = counts.min(axis=1, skipna=True, numeric_only=True)
 
+    valid = (D > 0) & (m > 0) & (counts > 0)
+    D, m, counts = D[valid], m[valid], counts[valid]
 
-    valid = (D > 0) & (m > 0)
-    D, m = D[valid], m[valid]
+    # normalize counts to prevent huge differences
+    weights = counts/counts.max()
+    sqrtw = np.sqrt(weights)
+
+    def residuals(params, x, y, w):
+        a, b = params
+        r = np.log10(a) + b * x -y
+        return np.sqrt(w)*r # weighted residuals
 
     if len(D) != 0:
         logD = np.log10(D)
         logm = np.log10(m)
 
-        idx = np.argsort(logD)
-        logD_sorted = logD[idx]
+    
+
+        p0 = (5, 5)
+        res = least_squares(residuals,p0, args=(logD, logm, weights), bounds=([0,0], [np.inf, np.inf]))
 
         # variable-dimension fit
         # linear fit (deg=1)
-        lin_coeff = np.polyfit(logD, logm, 1) # slope, intercept
-        b_lin, a_lin = lin_coeff
-        log_lin_fit = np.polyval(lin_coeff, logD_sorted)
+        # lin_coeff = np.polyfit(logD, logm, 1) # slope, intercept
+        # b_lin, a_lin = lin_coeff
+        # log_lin_fit = np.polyval(lin_coeff, logD_sorted)
+        a_lin, b_lin = res.x
+        log_lin_fit = np.log10(a_lin * (D**b_lin))
+
+        # sort for plotting
+        idx = np.argsort(logD)
+        logD_sorted = logD.iloc[idx]
+
+        
+        # sorted linear fit 
+        log_lin_fit = log_lin_fit.iloc[idx] # ensure same order as logD_sorted
         # quadratic fit (deg=2)
-        quad_coeff = np.polyfit(logD, logm, 2) # c2, c1, c0
+        quad_coeff = np.polyfit(logD, logm, 2, w=weights) # c2, c1, c0
         c2, c1, c0 = quad_coeff
         log_quad_fit = np.polyval(quad_coeff, logD_sorted)
 
@@ -1457,7 +1485,9 @@ def find_dimension_fits(df, variable):
 def plt_dimension_fits(df, variable, logD, log_lin_fit, log_quad_fit, b_local, b_lin, var_name, ylabel):
     D= df['flake_Dmax']#.values # bin centers
     m = df[variable]#.values # mean variable value per diameter bin
+    # sort by diameter for plotting
     
+
     counts = (df[['count_flake_Dmax', f'count_{variable}']])
     counts = counts.min(axis=1, skipna=True, numeric_only=True) # find the minimum amount of flakes within time bin of the two given values
     area = counts
@@ -1474,6 +1504,7 @@ def plt_dimension_fits(df, variable, logD, log_lin_fit, log_quad_fit, b_local, b
 
     fig, ax = plt.subplots(1, 2, figsize=(12,5), )
 
+    
     # (a) log-log fit
     sc = ax[0].scatter(D*1e3, m, label="Data", c=counts,cmap='Grays', norm=norm, s=s_scaled, alpha=0.7, edgecolor='k')
     ax[0].plot(10**logD*1e3, 10**log_lin_fit, 'b--', label=f'linear fit: b ={b_lin:.2f}')
@@ -1496,7 +1527,7 @@ def plt_dimension_fits(df, variable, logD, log_lin_fit, log_quad_fit, b_local, b
 
     # (b) local exponent vs D
     idx = np.argsort(b_local)
-    b_sorted = b_local[idx]
+    b_sorted = b_local.iloc[idx]
     D_valid = D[b_sorted.index]
 
     ax[1].plot(D_valid*1e3, b_sorted, 'ro-', label='quadratic slope b(D)')
@@ -1516,28 +1547,38 @@ def find_dimension_fits_sigma(df, ds):
     # n_per_m_all [particles m^-3 per m]  -> n_per_mm_all [particles m^-3 per mm]
     n_per_mm_all = n_per_m_all / 1000.
     # observed reflectivity
-    Z_obs_all = df['Ze_linear_sum_400'].values
+    Z_obs_all_mm = df['Ze_linear_sum_400'].values
+    Z_obs_all_m = Z_obs_all_mm*1e-18
 
-    dD = ds['dD'] #difference between bin_edges
-    dD_mm = dD.values*1000.     # convert to mm
+    dD_m = ds['dD'].values #difference between bin_edges
+    dD_mm = dD_m*1000.     # convert to mm
 
-    D = ds['bin']
-    D_mm = D.values*1000.    #convert to mm
+    D_m = ds['bin'].values
+    D_mm = D_m*1000.    #convert to mm
 
     # Mask invalid time steps (any NaN in PSD or Z)
-    valid = (~np.isnan(Z_obs_all)) & (~np.isnan(n_per_mm_all).all(axis=1))
+    valid = (~np.isnan(Z_obs_all_mm)) & (~np.isnan(n_per_mm_all).all(axis=1))
     n_per_mm_all = n_per_mm_all[valid, :]
-    Z_obs_all = Z_obs_all[valid]
+    Z_obs_all_mm = Z_obs_all_mm[valid]
 
     # Replace Nans in PSD with 0 (assume no particles in that bin)
     n_per_mm_all = np.nan_to_num(n_per_mm_all, nan=0.0)
 
+    # use exsisting counts for weighting
+    counts = ds['counts'].values[valid]
+    # normalize weights
+    # weights = counts/np.nanmax(counts)
+    # sqrtw = np.sqrt(np.clip(weights, 1e-6, None))
+    weights = np.nansum(counts, axis=1) # one weight per PSD
+    weights = weights/np.nanmax(weights)
+    
+
     # Find inital guess for a0 and b0
     logD_list, logsigma_list = [], []
-    for i in range(len(Z_obs_all)):
+    for i in range(len(Z_obs_all_mm)):
         n = n_per_mm_all[i, :] # since n can be zero the nansum in sigma_pseudo will return -inf, hence not only nan but alos inf have to be masked
         
-        Z = Z_obs_all[i]
+        Z = Z_obs_all_mm[i]
 
         # approximate sigma 
         sigma_pseudo = Z * (n *dD_mm) / np.nansum(n*dD_mm)
@@ -1562,19 +1603,21 @@ def find_dimension_fits_sigma(df, ds):
     quad_coeff = np.polyfit(logD, logs, 2) # c2, c1, c0
     c2, c1, c0 = quad_coeff
     b_local = local_exponent(D_mm, quad_coeff)
-    def residuals(params):
+    def residuals(params, w):
         a, b = params
         # compute PSD contribution X_t(b) for each time sample Z_pred(t) = a * sum(D^b N dD)
-        X = np.nansum((D_mm**b)[None,:] * n_per_mm_all * dD_mm[None,:], axis=1)
+        X = np.nansum((D_mm**b)[None,:] * n_per_mm_all * dD_mm[None,:] , axis=1) # weighted PSD contribution
         Z_pred = a * X
-        return Z_pred - Z_obs_all   # return vector of residuals
+        return np.sqrt(w) * (Z_pred - Z_obs_all_mm)  # return vector of residuals
+        
 
-    p0 = (10**a0_lin, b0_lin) # initial guess for the parameters the solver will try to fit
+    p0 = (max(10**a0_lin, 1e-12), max(b0_lin,1e-6)) # initial guess for the parameters the solver will try to fit
+    # p0 = (a0_lin, b0_lin)
     # starting guess for cross-section scaling: a_sigma = 1e-6, 
     #starting guess for the exponent: b_sigma=2
 
     # least_squares minimizes min sum(Z_pred - Z_obs)^2
-    res = least_squares(residuals, x0=np.array(p0), )#bounds=([0.0, -10], [np.inf, 10])) # bounds=([lower_a, lower_b], [upper_a, upper_b]) defines the feasible region
+    res = least_squares(residuals, x0=np.array(p0), args=(weights,), bounds=([0,0], [np.inf, np.inf]))# guarangees both a and b are positive # bounds=([lower_a, lower_b], [upper_a, upper_b]) defines the feasible region
     # # a_sigma >= 0 (backscatter cross section can't be negative)
     # # b_sigma [-10,10] prevent numerical instability
     a_lin, b_lin = res.x
@@ -1592,27 +1635,33 @@ def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_l
     a_lin = a_lin_z
     b_lin = b_lin_z
     b_local = b_local_z
-    D_mm = ds['bin'].values*1000
-    n_per_m_all = ds['n_per_m'].values
-    dD_mm = ds['dD'].values * 1000
-    Z_obs_all = df['Ze_linear_sum_400'].values
+    D_m = ds['bin'].values
+    D_mm = D_m*1000.    #convert to mm
+    # PSD
+    n_per_m_all = ds['n_per_m'].values 
+    # n_per_m_all [particles m^-3 per m]  -> n_per_mm_all [particles m^-3 per mm]
+    n_per_mm_all = n_per_m_all / 1000.
+    dD_m = ds['dD'].values #difference between bin_edges
+    dD_mm = dD_m*1000.     # convert to mm
+    Z_obs_all_mm = df['Ze_linear_sum_400'].values
+    Z_obs_all_m = Z_obs_all_mm*1e-18
 
     # linear fit predicted Z (a*D^b)
-    Z_pred_lin = a_lin * np.nansum((D_mm**b_lin)[None,:] * n_per_m_all * dD_mm[None,:], axis=1)
+    Z_pred_lin = a_lin * np.nansum((D_mm**b_lin)[None,:] * n_per_mm_all * dD_mm[None,:], axis=1)
 
     # quadratic fit
     sigma_quad = 10**log_quad_fit_z    # σ(D) per bin
-    Z_pred_quad = np.nansum(sigma_quad[None, :] * n_per_m_all *dD_mm[None, :], axis=1)
+    Z_pred_quad = np.nansum(sigma_quad[None, :] * n_per_mm_all *dD_mm[None, :], axis=1)
 
-    mask = (~np.isnan(Z_obs_all)) & (~np.isnan(Z_pred_lin)) & (~np.isnan(Z_pred_quad))
-    Z_obs_all, Z_pred_lin, Z_pred_quad = Z_obs_all[mask], Z_pred_lin[mask], Z_pred_quad[mask]
-    r2_lin = r2_score(Z_obs_all, Z_pred_lin)
-    r2_quad = r2_score(Z_obs_all, Z_pred_quad)
+    mask = (~np.isnan(Z_obs_all_mm)) & (~np.isnan(Z_pred_lin)) & (~np.isnan(Z_pred_quad))
+    Z_obs_all_mm, Z_pred_lin, Z_pred_quad = Z_obs_all_mm[mask], Z_pred_lin[mask], Z_pred_quad[mask]
+    r2_lin = r2_score(Z_obs_all_mm, Z_pred_lin)
+    r2_quad = r2_score(Z_obs_all_mm, Z_pred_quad)
 
     # Scatter plot 
     fig, ax = plt.subplots(1, 3, figsize=(18,5), )
-    ax[0].scatter(Z_obs_all, Z_pred_lin, alpha=0.5, color='b', label=f'linear fit: b ={b_lin:.2f}, R²={r2_lin:.3f}')
-    ax[0].scatter(Z_obs_all, Z_pred_quad, alpha=0.5, color='r', label=f'quadratic fit: R²={r2_quad:.3f}')
+    ax[0].scatter(Z_obs_all_mm, Z_pred_lin, alpha=0.5, color='b', label=f'linear fit: b ={b_lin:.2f}, R²={r2_lin:.3f}')
+    ax[0].scatter(Z_obs_all_mm, Z_pred_quad, alpha=0.5, color='r', label=f'quadratic fit: R²={r2_quad:.3f}')
     # 1:1 line
     x = np.linspace(0, 10e4, 100)
     y = x
@@ -1626,11 +1675,11 @@ def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_l
     ax[0].grid(True, ls=':')
 
     # (b) Residuals (Observed - Predicted)
-    res_lin = Z_obs_all - Z_pred_lin
-    res_quad = Z_obs_all - Z_pred_quad
+    res_lin = Z_obs_all_mm - Z_pred_lin
+    res_quad = Z_obs_all_mm - Z_pred_quad
 
-    ax[1].scatter(Z_obs_all, res_lin, alpha=0.5, color='b', label=f'linear residuals')
-    ax[1].scatter(Z_obs_all, res_quad, alpha=0.5, color='r', label=f'quadratic residudals') # residuals mostly negative at large Z, that means the model systematically underestimates for large reflectivity.
+    ax[1].scatter(Z_obs_all_mm, res_lin, alpha=0.5, color='b', label=f'linear residuals')
+    ax[1].scatter(Z_obs_all_mm, res_quad, alpha=0.5, color='r', label=f'quadratic residudals') # residuals mostly negative at large Z, that means the model systematically underestimates for large reflectivity.
     ax[1].axhline(0, color="k", ls="--")
     ax[1].set_xlabel("Observed Z [mm$^6$ m$^{-3}$]")
     ax[1].set_ylabel("Residual (Obs - Pred)")
@@ -1662,9 +1711,9 @@ def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_l
 
 
 
-def apply_timeoffset_to_df(df, ds):
+def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=pd.DataFrame(), min_rate=0.1,):
     # Drop rows where there is no fallspeed registered
-    df = df[df['fallspeed'].notna()]
+    # df = df[df['fallspeed'].notna()]
     seconds_to_subtract = 400 / df['fallspeed']
 
     # Convert seconds into timedeltas
@@ -1675,13 +1724,18 @@ def apply_timeoffset_to_df(df, ds):
     # subtract from index
     df['shifted_time_end'] = df.index - rounded_td
 
-    df_sum_offset = ds[['Matrosov_a_400', 'Bracci_a_400', 'Nakai_a_400', 'Nakai_g_400', 'Pu_g_400',
-                'Matrosov_a_800', 'Bracci_a_800', 'Nakai_a_800', 'Nakai_g_800', 'Pu_g_800',
-                'Matrosov_a_1000', 'Bracci_a_1000', 'Nakai_a_1000', 'Nakai_g_1000', 'Pu_g_1000',
-                'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
+    if len(df_sum_offset) == 0:
+        df_sum_offset = ds[['Matrosov_a_400', 'Bracci_a_400', 'Nakai_a_400', 'Nakai_g_400', 'Pu_g_400',
+                    'Matrosov_a_800', 'Bracci_a_800', 'Nakai_a_800', 'Nakai_g_800', 'Pu_g_800',
+                    'Matrosov_a_1000', 'Bracci_a_1000', 'Nakai_a_1000', 'Nakai_g_1000', 'Pu_g_1000',
+                    'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
     df_sum_offset.rename(columns={'Ze_linear_400': 'Ze_linear_sum_400', 'Ze_linear_800': 'Ze_linear_sum_800', 'Ze_linear_1000': 'Ze_linear_sum_1000'}, inplace=True)
-
-    df_mean_offset = ds[['Ze_400m', 'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000', 'W_400m', 'W_800m', 'W_1000m']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
+    # df_sum_offset['S_sim_all'] = ((df_sum_offset['Ze_linear_sum_400'] / 273.33) ** (1/0.31)) 
+    # df_sum_offset['S_sim_aggregate'] = ((df_sum_offset['Ze_linear_sum_400'] / 5006.19) ** (1/1.26))  
+    # df_sum_offset['S_sim_graupel'] = ((df_sum_offset['Ze_linear_sum_400'] / 316.87) ** (1/0.39)) 
+    # df_sum_offset['S_sim_mixed'] = ((df_sum_offset['Ze_linear_sum_400'] / 492.65) ** (1/0.57)) 
+    if len(df_mean_offset) == 0:
+        df_mean_offset = ds[['Ze_400m', 'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000', 'W_400m', 'W_800m', 'W_1000m']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
     df_mean_offset.rename(columns={'Ze_linear_400': 'Ze_linear_mean_400', 'Ze_linear_800': 'Ze_linear_mean_800', 'Ze_linear_1000': 'Ze_linear_mean_1000'}, inplace=True)
 
     for alt in [400, 800, 1000]:
@@ -1695,9 +1749,12 @@ def apply_timeoffset_to_df(df, ds):
     
     sums = []
     means= []
-    for i in range(len(df)-1):
-        seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i+1]]
-        seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i+1]]
+    # for i in range(len(df)-1):
+    #     seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i+1]]
+    #     seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i+1]]
+    for i in range(len(df)):
+        seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
+        seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
         
     
         # print(df.index[i], seg)
@@ -1705,11 +1762,12 @@ def apply_timeoffset_to_df(df, ds):
         means.append(seg_m.mean(numeric_only=True, skipna=True))
 
     df_offset = pd.concat([df[['shifted_time_end', 'Geonor', 'air_temperature', 'wind_direction', 'wind_speed', 'snowflake_class_name', 'fallspeed', 'flake_Dmax', 'gan3d_mass' ,'delta_h', 'rate_mm_h', 'count_fallspeed', 'count_flake_Dmax', 'count_gan3d_mass']],
-                                    pd.DataFrame(sums).set_index(df.index[1:]), 
-                                    pd.DataFrame(means).set_index(df.index[1:]), ], axis=1)# df['shifted_time_end'][1:].reset_index(drop=True)], axis=1)
+                                    pd.DataFrame(sums).set_index(df.index[:]), 
+                                    pd.DataFrame(means).set_index(df.index[:]), ], axis=1)# df['shifted_time_end'][1:].reset_index(drop=True)], axis=1)
 
     # limit Geonor precipitation to be above 0.1 mm/h
-    df_offset = df_offset[df_offset["rate_mm_h"] >= 0.1]
+    # df_offset = df_offset[df_offset["rate_mm_h"] >= 0.1]
+    df_offset[df_offset["rate_mm_h"] < min_rate] = np.nan
     df_offset['start_time'] = df_offset.index - pd.to_timedelta(df_offset['delta_h'] * 3600, unit='sec')
 
 
@@ -1722,7 +1780,11 @@ def apply_timeoffset_to_df(df, ds):
         for name in ["Matrosov_a", "Bracci_a", "Nakai_a", "Nakai_g", "Pu_g"]:
             df_offset[f"{name}_{alt}_mm_h"] = df_offset[f"{name}_{alt}"] / df_offset["delta_h"]
 
+        
 
         # Calculate Matrosov based on Ze_sum
         df_offset[f'Matrosov_from_ze_sum_{alt}'] = ((df_offset[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_offset["delta_h"])  # convert rate to mm
+
+    # for class_name in ['all', 'aggregate', 'graupel', 'mixed']:
+    #     df_offset[f'S_sim_{class_name}_mm_h'] = df_offset[f'S_sim_{class_name}'] / df_offset["delta_h"]
     return df_offset
