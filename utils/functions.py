@@ -978,7 +978,7 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
         raise ValueError("mode must be 'event' or 'fixed'")
     
     # Loop over segments
-    sums, means, sclass, mascdb, diameter, velocity, mass = [], [], [], [], [], [], []
+    sums, means, sclass, mascdb, counts, zs_counts = [], [], [], [], [], []
     dt = segment_bounds.to_series().diff().dt.total_seconds()
     for i in range(len(segment_bounds)):
         if i == 0:
@@ -1003,9 +1003,12 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
         sums.append(seg.sum(numeric_only=True, min_count=1))
         means.append(seg_m.mean(numeric_only=True, skipna=True))
         mascdb.append(seg_sf[['fallspeed', 'flake_Dmax', 'gan3d_mass']].mean(numeric_only=True, skipna=True))
-        diameter.append(seg_sf['flake_Dmax'].count())
-        velocity.append(seg_sf['fallspeed'].count())
-        mass.append(seg_sf['gan3d_mass'].count())
+        ma_cc = seg_sf[['flake_Dmax', 'fallspeed', 'gan3d_mass']].count()
+        ma_cc = ma_cc.rename({"flake_Dmax":"count_flake_Dmax", "fallspeed":"count_fallspeed", "gan3d_mass":"count_gan3d_mass"})
+        counts.append(ma_cc)
+        zs_cc = seg[['precipitation','Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000']].count()
+        zs_cc = zs_cc.rename({"precipitation":"count_precip", "Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"})
+        zs_counts.append(zs_cc)
         
 
         if len(seg_sf) != 0:
@@ -1031,7 +1034,8 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
                         pd.DataFrame(means).set_index(segment_bounds),
                         pd.DataFrame({"snowflake_class_name":sclass}).set_index(segment_bounds), 
                         pd.DataFrame(mascdb).set_index(segment_bounds),
-                        pd.DataFrame({"count_fallspeed": velocity, "count_flake_Dmax": diameter, "count_gan3d_mass": mass}).set_index(segment_bounds)
+                        pd.DataFrame(counts).set_index(segment_bounds),
+                        pd.DataFrame(zs_counts).set_index(segment_bounds)
                         # pd.DataFrame({"Dmax":dm}).set_index(segment_bounds),
                         # pd.DataFrame({"particle_mass":mass}).set_index(segment_bounds),
                         ], axis=1)
@@ -1442,7 +1446,7 @@ def find_dimension_fits(df, variable):
 
     # normalize counts to prevent huge differences
     weights = counts/counts.max()
-    sqrtw = np.sqrt(weights)
+    # sqrtw = np.sqrt(weights)
 
     def residuals(params, x, y, w):
         a, b = params
@@ -1711,7 +1715,10 @@ def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_l
 
 
 
-def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=pd.DataFrame(), min_rate=0.1,):
+def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=pd.DataFrame(), min_rate=0.1, ):
+
+
+    
     # Drop rows where there is no fallspeed registered
     # df = df[df['fallspeed'].notna()]
     seconds_to_subtract = 400 / df['fallspeed']
@@ -1749,19 +1756,33 @@ def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=
     
     sums = []
     means= []
+    zs_count = []
     # for i in range(len(df)-1):
     #     seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i+1]]
     #     seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i+1]]
     for i in range(len(df)):
-        seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
-        seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
+        # seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
+        # seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
+        if i == 0:
+            step = int(df['delta_h'][i] * 60 -1)
+            start = df.index[i] - pd.Timedelta(minutes=step)
+            seg = df_sum_offset.loc[start : df['shifted_time_end'][i]]
+            seg_m = df_mean_offset.loc[start : df['shifted_time_end'][i]]
+        else:
+            seg = df_sum_offset.loc[df['shifted_time_end'][i-1] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i]]
         
     
         # print(df.index[i], seg)
         sums.append(seg.sum(numeric_only=True, min_count=1))
         means.append(seg_m.mean(numeric_only=True, skipna=True))
 
-    df_offset = pd.concat([df[['shifted_time_end', 'Geonor', 'air_temperature', 'wind_direction', 'wind_speed', 'snowflake_class_name', 'fallspeed', 'flake_Dmax', 'gan3d_mass' ,'delta_h', 'rate_mm_h', 'count_fallspeed', 'count_flake_Dmax', 'count_gan3d_mass']],
+        zs_cc = seg[['Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000']].count()
+        zs_cc = zs_cc.rename({"Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"})
+        zs_count.append(zs_cc)
+
+
+    df_offset = pd.concat([df[['shifted_time_end', 'Geonor', 'air_temperature', 'wind_direction', 'wind_speed', 'snowflake_class_name', 'fallspeed', 'flake_Dmax', 'gan3d_mass' ,'delta_h', 'rate_mm_h', 'count_fallspeed', 'count_flake_Dmax', 'count_gan3d_mass', 'count_precip']],
+                           pd.DataFrame(zs_count).set_index(df.index[:]),
                                     pd.DataFrame(sums).set_index(df.index[:]), 
                                     pd.DataFrame(means).set_index(df.index[:]), ], axis=1)# df['shifted_time_end'][1:].reset_index(drop=True)], axis=1)
 
@@ -1788,3 +1809,10 @@ def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=
     # for class_name in ['all', 'aggregate', 'graupel', 'mixed']:
     #     df_offset[f'S_sim_{class_name}_mm_h'] = df_offset[f'S_sim_{class_name}'] / df_offset["delta_h"]
     return df_offset
+
+# https://stackoverflow.com/questions/75731161/how-to-calculate-a-linear-regression-with-a-predefined-slope
+def sse_intercept(loga, b, logS, logZ, w):
+    Z_pred = loga + b*logS
+    residuals = (Z_pred - logZ)
+    weighted_sse = np.sum(w * residuals**2)
+    return weighted_sse # weighted residuals
