@@ -10,18 +10,28 @@ ze_bins = np.arange(-10,31,1)# Reflectivity bins [dBZ] 1 dBZ for reflectivity
 W_bins = np.arange(-3,3,0.075) # bin widths of 0.075 m s−1 for Doppler velocity
 sW_bins = np.arange(0,1.2, 0.05) # bin widths of 0.05 m s−1 for Doppler spectral width
 
-cmap = cm.glasgow  # define the colormap
+# cmap = cm.glasgow  # define the colormap
+cmap = cm.managua
 # extract all colors from the colormap
 cmaplist = [cmap(i) for i in range(cmap.N)]
 # create the new map
-cmap = LinearSegmentedColormap.from_list(
-'Custom cmap', cmaplist, 4) # cmap.N
+# cmap = LinearSegmentedColormap.from_list(
+# 'Custom cmap', cmaplist, 4) # cmap.N
+cmap = LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)
 
+# custom_colors = {  
+#                      'aggregate': cmap(0),  
+#                      'graupel':cmap(1),   
+#                      'mixed': cmap(2),
+#                      'pristine':cmap(3),
+                
+                
+#                 }
 custom_colors = {  
-                     'aggregate': cmap(0),  
-                     'graupel':cmap(1),   
+                     'aggregate': cmap(1),  
+                     'graupel':cmap(4),   
                      'mixed': cmap(2),
-                     'pristine':cmap(3),
+                     'pristine':cmap(5),
                 
                 
                 }
@@ -748,7 +758,7 @@ def plot_snowflake_classes(ax, ds):
         ax.plot(date2num(data['time']), 
                 np.full(len(data['time']), level),
                 marker=markers[y_pos - 1], linestyle='None',
-                color=custom_colors[name], markersize=4, label=name)
+                color=custom_colors[name], markersize=12, label=name, alpha=0.7)
     # ax.legend(loc='best', )#fontsize=8)
     ax.set_yticks(range(1, 4))
     # ax.set_yticklabels("") 
@@ -801,8 +811,10 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
     norm    = BoundaryNorm(boundaries=bounds, ncolors=256)  # hawaii_r has 256 levels
     # Use Crameri colormap (hawaii_r)
     cmap    = cm.hawaii_r
+ 
 
     plot_pcolormesh_with_cbar(ax=axs[0], fig=fig, data=ds['Ze'].transpose('range','time'), x=time_vals, y=ds['range'], cmap=cmap, norm=norm, cbar_bounds=bounds, cbar_label=f"Reflectivity [{ds['Ze'].attrs['units']}]", cbar_pos=[cbar_left, cbar_top -0 *cbar_step, cbar_width, cbar_height])
+    axs[0].hlines(4., ds.time.values[0], ds.time.values[-1], colors='k', linestyles='-.', label='400m')
 
     format_range_axis(axs[0], ds)
 
@@ -812,14 +824,33 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
     
     # Precipitation accumulation hourly
     precip = ds['precipitation'].resample(time='1H').sum('time', skipna=True, keep_attrs=True)
-    axs[2].bar(precip.time.values, precip.values, width=np.timedelta64(40, 'm'), align='center', color='tab:blue', label='Valid Precipitation', alpha=0.5)
+    axs[2].bar(precip.time.values, precip.values, width=np.timedelta64(40, 'm'), align='center', color='tab:blue', label='Geonor', alpha=0.5)
     # Highlight missing data periods with shaded background
     missing_times = precip['time'][np.where(precip==0.)].values
     for t in missing_times:
             axs[2].axvspan(t- np.timedelta64(20, 'm'), t + np.timedelta64(20, 'm'), color='gray', alpha=0.2)
+
+    bb = (fig.subplotpars.left -0.1, fig.subplotpars.bottom-0.23, 
+        fig.subplotpars.right-fig.subplotpars.left + 0.2,.1)
+    precip_m = ds['Matrosov_a_400'].resample(time='1H').sum('time',skipna=True, keep_attrs=True)/1 # mm/h
+    axs[2].plot(precip_m.time.values, precip_m.values, color='darkblue', label="Matrosov (2007): Z = 56 S$^{1.2}$", linestyle='solid')
+    
+    # precip_m = ds['Bracci_a_400'].resample(time='1H').sum('time', skipna=True, keep_attrs=True)/1 # mm/h
+    # axs[2].plot(precip_m.time.values, precip_m.values, color='darkblue', label="Bracci et al. (2022): Z = 134 S$^{1.25}$", linestyle = 'dotted')
+
+    precip_m = ds['Nakai_a_400'].resample(time='1H').sum('time', skipna=True, keep_attrs=True)/1 # mm/h
+    axs[2].plot(precip_m.time.values, precip_m.values, color='darkblue', label="Nakai et al. (2022): Z = 107.4 S$^{1.67}$", linestyle = 'dashed')
+
+    precip_m = ds['Nakai_g_400'].resample(time='1H').sum('time', skipna=True, keep_attrs=True)/1 # mm/h
+    axs[2].plot(precip_m.time.values, precip_m.values, color='darkblue', label = "Nakai et al. (2022): Z = 227.4 S$^{1.67}$", linestyle = 'dashdot')
+
+    # precip_m = ds['Pu_g_400'].resample(time='1H').sum('time', skipna=True, keep_attrs=True)/1 # mm/h
+    # axs[2].plot(precip_m.time.values, precip_m.values, color='darkblue', label = "Pu et al. (2020): Z = 252 S$^{2.03}$", linestyle = (0, (3, 1, 1, 1)))
+
     axs[2].set_ylabel(f"Precipitation [{ds['precipitation'].attrs['units']}]")
     axs[2].set_ylim([0, 4.1])
-    axs[2].legend()
+    axs[2].legend(bbox_to_anchor=bb, mode="expand", loc="lower left",
+                ncol=2, borderaxespad=0., bbox_transform=fig.transFigure)
 
 
 #     # Doppler velocity
@@ -917,8 +948,9 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
 
     # Shared formatting
     date_form = DateFormatter("%H:00")
-    for ax, title in zip(axs, titles):
+    for (i,ax), title in zip(enumerate(axs), titles):
         ax.set(xlabel = "", title=title)
+        ax.text(0.045, 0.9, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
         ax.xaxis.grid(ls=':')
         ax.tick_params(axis='x', labelrotation=0)
         plt.setp(ax.get_xticklabels(), horizontalalignment="center")
@@ -927,9 +959,9 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
         ax.set_xlim([day_start, xmax])
 
     axs[-1].set(xlabel="Time [UTC]")
-    fig.suptitle(f"{site.split('.')[0]} ({ds.time.dt.date[0].values})", fontweight="bold")
+    fig.suptitle(f"{site.split('.')[0]} ({ds.time.dt.date[0].values} — {ds.time.dt.date[-1].values})", fontweight="bold")
     # fig.subplots_adjust(top=0.94)
-    fig.subplots_adjust(top=0.92)
+    fig.subplots_adjust(top=0.91)
 
 def test_and_return_dominant_sf_class(seg, sclass):
     # count the occurences of the snowflake class name within the dTime
@@ -1388,12 +1420,12 @@ def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze):
     cax = fig.add_axes([0.89, 0.125 , 0.015, 0.75]) # left, bottom, width, height
     fig.colorbar(pcm, cax=cax, orientation='vertical', label='Probability')
 
-def plt_precip_scatter_literature(df, title=None):
-    equations = {"Matrosov_a": "Z = 56 S$^{1.2}$",
-             "Bracci_a": "Z = 134 S$^{1.25}$",
-             "Nakai_a": "Z = 107.4 S$^{1.67}$",
-             "Nakai_g": "Z = 227.4 S$^{1.67}$",
-             "Pu_g" : "Z = 252 S$^{2.03}$"}
+def plt_precip_scatter_literature(df, title=" "):
+    equations = {"Matrosov_a": ["Z = 56 S$^{1.2}$", "(2007)"], 
+             "Bracci_a": ["Z = 134 S$^{1.25}$", "et al. (2022)"],
+             "Nakai_a": ["Z = 107.4 S$^{1.67}$", "et al. (2022)"],
+             "Nakai_g": ["Z = 227.4 S$^{1.67}$", "et al. (2022)"],
+             "Pu_g" : ["Z = 252 S$^{2.03}$", "et al. (2020)"]}
 
     fig, axsm = plt.subplots(2, 3, figsize=(15, 10, ), sharex=True, sharey=True)
     axs = axsm.flatten()
@@ -1414,7 +1446,7 @@ def plt_precip_scatter_literature(df, title=None):
 
         ax.set(xlabel = "Geonor [mm h$^{-1}$]", ylabel=ylabel, xlim=[0.009, 40], ylim=[0.009,40])
         ax.grid(True, ls=':')
-        ax.set_title(f"{name.split('_')[0]}: {eq}".title(), color=color, fontweight='bold', )
+        ax.set_title(f"{name.split('_')[0]} {eq[1]}: {eq[0]}", color=color, fontweight='bold', )
 
         ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
         ax.set_xscale('log')
@@ -1425,6 +1457,8 @@ def plt_precip_scatter_literature(df, title=None):
         y = x
         ax.plot(x, y, linestyle='--', color='darkgrey')
 
+    
+    # axs[-2].text(2.05, 0.95, "\n Bracci et al. (2022) \n Matrosov (2007) \n Nakai et al. (2022) \n Pu et al. (2020)", fontweight ='bold', horizontalalignment='left',verticalalignment='center', transform = axs[-2].transAxes)
     axs[-1].set_visible(False)
 
     fig.suptitle(f"{title}", fontweight ="bold",y=0.96)  
@@ -1438,15 +1472,20 @@ def local_exponent(D, coeffs):
 def find_dimension_fits(df, variable):
     D = df['flake_Dmax']
     m = df[variable] # mean variable value per diameter bin
-    counts = (df[['count_flake_Dmax', f'count_{variable}']])
-    counts = counts.min(axis=1, skipna=True, numeric_only=True)
 
-    valid = (D > 0) & (m > 0) & (counts > 0)
-    D, m, counts = D[valid], m[valid], counts[valid]
 
-    # normalize counts to prevent huge differences
-    weights = counts/counts.max()
-    # sqrtw = np.sqrt(weights)
+    if 'count_flake_Dmax' in df.columns:
+        counts = (df[['count_flake_Dmax', f'count_{variable}']])
+        counts = counts.min(axis=1, skipna=True, numeric_only=True)
+        valid = (D > 0) & (m > 0) & (counts > 0)
+        D, m, counts = D[valid], m[valid], counts[valid]
+        # normalize counts to prevent huge differences
+        weights = counts/counts.max()
+    else:
+        valid = (D > 0) & (m > 0)
+        D, m = D[valid], m[valid]
+        weights = np.ones(len(D))
+
 
     def residuals(params, x, y, w):
         a, b = params
@@ -1486,24 +1525,28 @@ def find_dimension_fits(df, variable):
     
     return logD_sorted, log_lin_fit, log_quad_fit, b_local, b_lin
 
-def plt_dimension_fits(df, variable, logD, log_lin_fit, log_quad_fit, b_local, b_lin, var_name, ylabel):
+def plt_dimension_fits(df, variable, logD, log_lin_fit, log_quad_fit, b_local, b_lin, var_name, ylabel, title=" "):
     D= df['flake_Dmax']#.values # bin centers
     m = df[variable]#.values # mean variable value per diameter bin
     # sort by diameter for plotting
     
-
-    counts = (df[['count_flake_Dmax', f'count_{variable}']])
-    counts = counts.min(axis=1, skipna=True, numeric_only=True) # find the minimum amount of flakes within time bin of the two given values
+    if 'count_flake_Dmax' in df.columns:
+        counts = (df[['count_flake_Dmax', f'count_{variable}']])
+        counts = counts.min(axis=1, skipna=True, numeric_only=True) # find the minimum amount of flakes within time bin of the two given values
+        counts = counts.values
+    else:
+        counts = np.ones(len(df['flake_Dmax']))
+        
     area = counts
 
     # normalize scatter sizes (so sizes are comparable across plots)
     scaler = MinMaxScaler(feature_range=(20, 200))  # size range
-    s_scaled = scaler.fit_transform(area.values.reshape(-1, 1)).ravel()
+    s_scaled = scaler.fit_transform(area.reshape(-1, 1)).ravel()
 
     if variable == 'gan3d_mass':
         bounds = np.arange(0, 37.5, 2.5)
     elif variable == 'fallspeed':
-        bounds = np.arange(0, 525, 25)
+        bounds = np.arange(0, 1000, 25)
     norm = BoundaryNorm(bounds, ncolors=256, extend='max')
 
     fig, ax = plt.subplots(1, 2, figsize=(12,5), )
@@ -1519,16 +1562,16 @@ def plt_dimension_fits(df, variable, logD, log_lin_fit, log_quad_fit, b_local, b
     ax[0].set_title(f"{var_name}-dimension fits")
     # first legend: fits
     legend1 = ax[0].legend(loc="upper left")
-    
-    # add colorbar for counts
-    cbar=fig.colorbar(sc, ax=ax[0], boundaries=bounds, ticks=bounds[::2], spacing="uniform", format="%.0f")
-    cbar.set_label("Counts")
-    # cbar.ax.set_yticklabels((bounds[::2]))
     ax[0].grid(True, ls=':')
     # ax[0].set_yscale('log')
     
-
-
+    if 'count_flake_Dmax' in df.columns:
+        # add colorbar for counts
+        cbar=fig.colorbar(sc, ax=ax[0], boundaries=bounds, ticks=bounds[::2], spacing="uniform", format="%.0f")
+        cbar.set_label("Counts")
+        # cbar.ax.set_yticklabels((bounds[::2]))
+    
+    
     # (b) local exponent vs D
     idx = np.argsort(b_local)
     b_sorted = b_local.iloc[idx]
@@ -1542,7 +1585,8 @@ def plt_dimension_fits(df, variable, logD, log_lin_fit, log_quad_fit, b_local, b
     ax[1].legend()
     ax[1].grid(True, ls=':')
 
-    plt.tight_layout()
+    fig.suptitle(f"{title}", fontweight ="bold",y=0.96)  
+    plt.tight_layout(rect=[0,0,1,1])
 
 def find_dimension_fits_sigma(df, ds):
     ### find the sigma-dimension relationship from reflectivity
@@ -1560,21 +1604,28 @@ def find_dimension_fits_sigma(df, ds):
     D_m = ds['bin'].values
     D_mm = D_m*1000.    #convert to mm
 
-    # Mask invalid time steps (any NaN in PSD or Z)
-    valid = (~np.isnan(Z_obs_all_mm)) & (~np.isnan(n_per_mm_all).all(axis=1))
-    n_per_mm_all = n_per_mm_all[valid, :]
-    Z_obs_all_mm = Z_obs_all_mm[valid]
+    
 
     # Replace Nans in PSD with 0 (assume no particles in that bin)
     n_per_mm_all = np.nan_to_num(n_per_mm_all, nan=0.0)
 
     # use exsisting counts for weighting
-    counts = ds['counts'].values[valid]
+    # counts = ds['counts'].values
+    # counts = df['count_Ze_lin_400'].values
+    counts = df['count_flake_Dmax']
     # normalize weights
-    # weights = counts/np.nanmax(counts)
-    # sqrtw = np.sqrt(np.clip(weights, 1e-6, None))
-    weights = np.nansum(counts, axis=1) # one weight per PSD
-    weights = weights/np.nanmax(weights)
+    # weights = np.nansum(counts, axis=1) # one weight per PSD bin
+    # weights = weights/np.nanmax(weights)
+
+    # Mask invalid time steps (any NaN in PSD or Z)
+    valid = (~np.isnan(Z_obs_all_mm)) & (~np.isnan(n_per_mm_all).all(axis=1)) & (counts > 0)
+    n_per_mm_all = n_per_mm_all[valid, :]
+    Z_obs_all_mm = Z_obs_all_mm[valid]
+    counts = counts[valid]
+
+    # normalize counts to prevent huge differences
+    weights = counts/counts.max()
+
     
 
     # Find inital guess for a0 and b0
@@ -1635,7 +1686,7 @@ def find_dimension_fits_sigma(df, ds):
     return logD_sorted, log_lin_fit, log_quad_fit, b_local, b_lin, a_lin
 
 
-def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_lin_z):
+def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_lin_z, var_name, title=" "):
     a_lin = a_lin_z
     b_lin = b_lin_z
     b_local = b_local_z
@@ -1673,7 +1724,8 @@ def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_l
 
     ax[0].set_xlabel("Observed Z [mm$^6$ m$^{-3}$]")
     ax[0].set_ylabel("Predicted Z [mm$^6$ m$^{-3}$]")
-    ax[0].set_title("Fit performance")
+    ax[0].set_title(f"{var_name}-Fit performance")
+
     ax[0].set_yscale('log')
     ax[0].legend()
     ax[0].grid(True, ls=':')
@@ -1709,8 +1761,9 @@ def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_l
         axs.set_xscale('log')
         # axs.set_yscale('log')
     
-
-    plt.tight_layout()
+    fig.suptitle(f"{title}", fontweight ="bold",y=0.96)  
+    plt.tight_layout(rect=[0,0,1,1])
+    # plt.tight_layout()
 
 
 
@@ -1763,13 +1816,10 @@ def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=
     for i in range(len(df)):
         # seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
         # seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
-        if i == 0:
-            step = int(df['delta_h'][i] * 60 -1)
-            start = df.index[i] - pd.Timedelta(minutes=step)
-            seg = df_sum_offset.loc[start : df['shifted_time_end'][i]]
-            seg_m = df_mean_offset.loc[start : df['shifted_time_end'][i]]
-        else:
-            seg = df_sum_offset.loc[df['shifted_time_end'][i-1] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i]]
+        step = df['delta_h'][i] * 60 - 1
+        start = df['shifted_time_end'][i] - pd.Timedelta(minutes=step)
+        seg = df_sum_offset.loc[start : df['shifted_time_end'][i]]
+        seg_m = df_mean_offset.loc[start : df['shifted_time_end'][i]]
         
     
         # print(df.index[i], seg)
@@ -1814,5 +1864,6 @@ def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=
 def sse_intercept(loga, b, logS, logZ, w):
     Z_pred = loga + b*logS
     residuals = (Z_pred - logZ)
-    weighted_sse = np.sum(w * residuals**2)
+    # weighted_sse = np.sum(w * residuals**2)
+    weighted_sse = np.sum(residuals**2)
     return weighted_sse # weighted residuals

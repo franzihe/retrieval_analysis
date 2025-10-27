@@ -22,12 +22,13 @@ import time
 import seaborn as sns
 from seaborn import set_context
 from windrose import WindroseAxes
-from matplotlib.patches import Wedge
-from matplotlib.patches import Patch
+from matplotlib.patches import Wedge, Patch, Rectangle
 from matplotlib.lines import Line2D
 from scipy.optimize import curve_fit, least_squares, minimize
-from scipy.stats import linregress
+from scipy.stats import linregress, pearsonr
 from math import pi
 from sklearn.metrics import r2_score
 from sklearn.preprocessing import MinMaxScaler
+
+from matplotlib.legend_handler import HandlerTuple
 
