@@ -7,7 +7,7 @@ fig_label = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)', '(g)', '(h)', '(i)', '(j)
 
 height_bins = np.arange(0, 3000, 100) # Height bins [m] bins of 100 m for height 
 ze_bins = np.arange(-10,31,1)# Reflectivity bins [dBZ] 1 dBZ for reflectivity
-W_bins = np.arange(-3,3,0.075) # bin widths of 0.075 m s−1 for Doppler velocity
+W_bins = np.arange(-4,4,0.075) # bin widths of 0.075 m s−1 for Doppler velocity
 sW_bins = np.arange(0,1.2, 0.05) # bin widths of 0.05 m s−1 for Doppler spectral width
 
 # cmap = cm.glasgow  # define the colormap
@@ -746,23 +746,27 @@ def plot_snowflake_classes(ax, ds):
     # ('columnar_crystal', 2),
     # ('columnar_planar_combination', 3),
     ('graupel', 2),
-    ('pristine', 3)
+    ('mixed', 3),
+    ('pristine', 4)
     # ('planar_crystal', 5),
     # ('small_particle', 6)
 ]
     markers = ['*', '^',  'h','o',  's', 'd']
-    
+    counts = [] 
+
     for y_pos, (name, level) in enumerate(particle_classes, 1) :
         # data = ds[name].dropna('time')
         data = (ds['most_common_class'].where(ds['most_common_class'] == name)).dropna('time')
+        counts.append(len(data))
+
         ax.plot(date2num(data['time']), 
                 np.full(len(data['time']), level),
                 marker=markers[y_pos - 1], linestyle='None',
                 color=custom_colors[name], markersize=12, label=name, alpha=0.7)
     # ax.legend(loc='best', )#fontsize=8)
-    ax.set_yticks(range(1, 4))
+    ax.set_yticks(range(1, 5))
     # ax.set_yticklabels("") 
-    ax.set_yticklabels([name for name, _ in particle_classes])
+    ax.set_yticklabels([f"{name} ({cnt})" for (name, _), cnt in zip(particle_classes, counts)])
     ax.grid(True, ls=':')
 
 
@@ -1038,8 +1042,10 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
         ma_cc = seg_sf[['flake_Dmax', 'fallspeed', 'gan3d_mass']].count()
         ma_cc = ma_cc.rename({"flake_Dmax":"count_flake_Dmax", "fallspeed":"count_fallspeed", "gan3d_mass":"count_gan3d_mass"})
         counts.append(ma_cc)
-        zs_cc = seg[['precipitation','Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000']].count()
-        zs_cc = zs_cc.rename({"precipitation":"count_precip", "Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"})
+        zs_cc = seg[['precipitation','Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000'
+                     ]].count()
+        zs_cc = zs_cc.rename({"precipitation":"count_precip", "Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"
+                              })
         zs_counts.append(zs_cc)
         
 
@@ -1090,7 +1096,7 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
         # Matrosov from Ze_sum
         df_out[f'Matrosov_from_ze_sum_{alt}'] = ((df_out[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_out["delta_h"])  # convert rate to mm
 
-    # df_out.index.name = 'time'
+    df_out.index.name = 'time'
     # ds_out = xr.concat([df_out.to_xarray(), psd], "time")
     
     # in addition in the dataframe fallspeed has to be present to adjust for the timing for the reflectivity
@@ -1132,12 +1138,13 @@ def find_psd_in_timestep(seg_sf, delta_h, index):
     # density per unit diameter (particles m^-3 per m)
     n_per_m = N_bin / dD # per meter
 
-    # Compute snowfall rate in that delta_h
-    rho_w = 1000. # liquid water density [kg/m^3]
-    if np.all(np.isnan(m_bin * v_bin * N_bin * dD)):
-        S_m_per_h = np.nan
-    else:
-        S_m_per_h = (3600.0 / rho_w) * np.nansum(m_bin * v_bin * N_bin * dD) # mm/h
+    # # Compute snowfall rate in that delta_h
+    # rho_w = 1000. # liquid water density [kg/m^3]
+    # if np.all(np.isnan(m_bin * v_bin * N_bin * dD)):
+    #     S_m_per_h = np.nan
+    # else:
+    #     # S_m_per_h = (3600.0 / rho_w) * np.nansum(m_bin * v_bin * N_bin * dD) # mm/h
+    #     S_m_per_h = (3600. / rho_w) * (np.nansum(seg_sf['gan3d_mass'] * seg_sf['fallspeed']) / (A_eff * T_sample))
 
     # df_psd = pd.DataFrame({'D_center_m': bin_centers, 'dD_m': dD, 'counts':counts, 'v_bin_m_s':v_bin, 'N_bin_m3':N_bin, 'n_per_m':n_per_m,})
     dataset = xr.Dataset({"counts": (["time", "bin"], [counts]), 
@@ -1147,7 +1154,8 @@ def find_psd_in_timestep(seg_sf, delta_h, index):
                         #   "D_center_m": (["time", "bin"], [dD]),
                           "N_bin_m3": (["time", "bin"], [N_bin]),
                           "n_per_m": (["time", "bin"], [n_per_m]),
-                          "S_m_per_h": (["time"], [S_m_per_h]),}, 
+                        #   "S_m_per_h": (["time"], [S_m_per_h]),
+                          }, 
                           coords={"time": [index], 
                                   "bin": bin_centers,
                                   "dD":("bin", dD) # widths as coordinate
@@ -1381,8 +1389,8 @@ def plt_fallspeed_distribution_by_class(df_only_class, binwidth=0.25,stat='perce
 
     # plt.savefig(os.path.join(FIG_DIR, 'fallspeed', 'aggregate_graupel_mixed_pristine_precip_event.png'), format='png', bbox_inches='tight', dpi=300, transparent=True,)
 
-def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze):
-    cmap = cm.glasgow_r  # define the colormap
+def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze, H_w_prob, H_w):
+    cmap = cm.managua_r #cm.glasgow_r  # define the colormap
     # extract all colors from the colormap
     cmaplist = [cmap(i) for i in range(cmap.N)]
     # force the first color entry to be white
@@ -1392,61 +1400,84 @@ def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze):
     'Custom cmap', cmaplist, 14) # cmap.N
     # define the bins and normalize
     # bounds = np.linspace(0, 7e7, 11)
-    bounds = np.arange(0., 0.003, 0.0002)
-    norm = BoundaryNorm(bounds, cmap.N)
+    # bounds = np.arange(0., 0.003, 0.0002)
+    bounds_z = np.round(np.linspace(0., 0.004, 15), 4)
+    norm_z = BoundaryNorm(bounds_z, cmap.N)
+
+    bounds_w = np.round(np.linspace(0., 0.0025, 15), 4)
+    norm_w = BoundaryNorm(bounds_w, cmap.N)
 
     fig, axs = plt.subplots(
-                nrows=1, ncols=3,
-                figsize=(15,5), sharey=True, 
+                nrows=2, ncols=3,
+                figsize=(15,10), sharey=True, 
                 )
     axs = np.atleast_2d(axs)    # safe even if n_cols=2
         
-    for (i,ax), cat in zip(enumerate(axs.flatten()), ['aggregate', 'graupel', 'mixed']):
-                pcm = ax.pcolormesh(ze_bins, height_bins, H_ze_prob[cat], cmap=cmap, norm=norm) 
+    for (i,ax), cat in zip(enumerate(axs.flatten()), ['aggregate', 'graupel', 'mixed',
+                                                      'aggregate', 'graupel', 'mixed']):
+               
+                if i == 0 or i == 1 or i==2:
+                    pcm = ax.pcolormesh(ze_bins, height_bins, H_ze_prob[cat], cmap=cmap, norm=norm_z) 
 
-                # title with raw counts
-                total = int(np.nansum(H_ze[cat]))
-                ax.set_title(f"{cat}\n(counts={total})".title(), fontweight='bold', color=custom_colors[cat])
-                ax.set_xlabel("Reflectivity [dBz]")
+                    # title with raw counts
+                    total = int(np.nansum(H_ze[cat]))
+                    ax.set_title(f"{cat}\n(counts={total})".title(), fontweight='bold', color=custom_colors[cat])
+                    ax.set_xlabel("Reflectivity [dBz]")
+                if i == 3 or i == 4 or i == 5:
+                    pcm2 = ax.pcolormesh(W_bins, height_bins, H_w_prob[cat], cmap=cmap, norm=norm_w) 
+                    ax.vlines(0,0,30, linestyle='--', color='darkgrey')
+                    total = int(np.nansum(H_w[cat]))
+                    ax.set_title(f"\n(counts={total})".title(), fontweight='bold', color=custom_colors[cat])
+                    ax.set_xlabel("Doppler Velocity [m s$^{{-1}}$]")
 
                 ax.grid(True, ls=':')
                 ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
-                if i == 0:
+                if i == 0 or i == 3:
                         ax.set_ylabel("Height [m]")
 
 
     plt.tight_layout(rect=[0, 0, 0.9, 1])   # leave room for cbars
 
-    cax = fig.add_axes([0.89, 0.125 , 0.015, 0.75]) # left, bottom, width, height
-    fig.colorbar(pcm, cax=cax, orientation='vertical', label='Probability')
+    cax = fig.add_axes([0.89, 0.57 , 0.015, 0.35]) # left, bottom, width, height
+    fig.colorbar(pcm, cax=cax, orientation='vertical', label='Probability', extend='max')
+
+    cax = fig.add_axes([0.89, 0.09 , 0.015, 0.35]) # left, bottom, width, height
+    fig.colorbar(pcm2, cax=cax, orientation='vertical', label='Probability', extend='max')
 
 def plt_precip_scatter_literature(df, title=" "):
-    equations = {"Matrosov_a": ["Z = 56 S$^{1.2}$", "(2007)"], 
-             "Bracci_a": ["Z = 134 S$^{1.25}$", "et al. (2022)"],
-             "Nakai_a": ["Z = 107.4 S$^{1.67}$", "et al. (2022)"],
-             "Nakai_g": ["Z = 227.4 S$^{1.67}$", "et al. (2022)"],
-             "Pu_g" : ["Z = 252 S$^{2.03}$", "et al. (2020)"]}
+    cmap = cm.managua  # define the colormap
+    # extract all colors from the colormap
+    cmaplist = [cmap(i) for i in range(cmap.N)]
+    # create the new map
+    custom_cmap = LinearSegmentedColormap.from_list(
+    'Custom cmap', cmaplist, 7) # cmap.N
+    equations = {"Matrosov_a": ['Aggregate', "(2007)", custom_cmap(1)],#["Z = 56 S$^{1.2}$", ], 
+             "Bracci_a": ['Aggregate', "et al. (2022)", custom_cmap(0)],#["Z = 134 S$^{1.25}$", ],
+             "Nakai_a": ['Aggregate', "et al. (2022)", custom_cmap(2)],#["Z = 107.4 S$^{1.67}$"],
+             "Nakai_g": ['Graupel', "et al. (2022)", custom_cmap(4)], # ["Z = 227.4 S$^{1.67}$", ],
+             "Pu_g" : ['Graupel', "et al. (2020)", custom_cmap(5)], #["Z = 252 S$^{2.03}$", ]
+             }
 
     fig, axsm = plt.subplots(2, 3, figsize=(15, 10, ), sharex=True, sharey=True)
     axs = axsm.flatten()
 
     for (i,ax), (name, eq) in zip(enumerate(axs), equations.items()):
         if i == 0 or i==1 or i==2:
-            color = custom_colors['aggregate'] 
+            # color = custom_colors['aggregate'] 
             xval = df['aggregate']['rate_mm_h']
             yval = df['aggregate'][f'{name}_400_mm_h']
             ylabel = "S$_{aggregate}$ [mm h$^{-1}$]"
         else:
-            color = custom_colors['graupel'] 
+            # color = custom_colors['graupel'] 
             xval = df['graupel']['rate_mm_h']
             yval = df['graupel'][f'{name}_400_mm_h']
             ylabel = "S$_{graupel}$ [mm h$^{-1}$]"
-        ax.scatter(xval, yval, color=color, alpha=0.7,  edgecolor=color)
+        ax.scatter(xval, yval, color=eq[2], alpha=0.7,  edgecolor=eq[2])
 
 
         ax.set(xlabel = "Geonor [mm h$^{-1}$]", ylabel=ylabel, xlim=[0.009, 40], ylim=[0.009,40])
         ax.grid(True, ls=':')
-        ax.set_title(f"{name.split('_')[0]} {eq[1]}: {eq[0]}", color=color, fontweight='bold', )
+        ax.set_title(f"{name.split('_')[0]} {eq[1]}: {eq[0]}", color=eq[2], fontweight='bold', )
 
         ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
         ax.set_xscale('log')
@@ -1610,21 +1641,19 @@ def find_dimension_fits_sigma(df, ds):
     n_per_mm_all = np.nan_to_num(n_per_mm_all, nan=0.0)
 
     # use exsisting counts for weighting
-    # counts = ds['counts'].values
-    # counts = df['count_Ze_lin_400'].values
-    counts = df['count_flake_Dmax']
-    # normalize weights
-    # weights = np.nansum(counts, axis=1) # one weight per PSD bin
-    # weights = weights/np.nanmax(weights)
+    # counts = df['count_flake_Dmax']
+    # # normalize weights
+    # # weights = np.nansum(counts, axis=1) # one weight per PSD bin
+    # # weights = weights/np.nanmax(weights)
 
     # Mask invalid time steps (any NaN in PSD or Z)
-    valid = (~np.isnan(Z_obs_all_mm)) & (~np.isnan(n_per_mm_all).all(axis=1)) & (counts > 0)
+    valid = (~np.isnan(Z_obs_all_mm)) & (~np.isnan(n_per_mm_all).all(axis=1)) #& (counts > 0)
     n_per_mm_all = n_per_mm_all[valid, :]
     Z_obs_all_mm = Z_obs_all_mm[valid]
-    counts = counts[valid]
+    # counts = counts[valid]
 
-    # normalize counts to prevent huge differences
-    weights = counts/counts.max()
+    # # normalize counts to prevent huge differences
+    # weights = counts/counts.max()
 
     
 
@@ -1658,12 +1687,13 @@ def find_dimension_fits_sigma(df, ds):
     quad_coeff = np.polyfit(logD, logs, 2) # c2, c1, c0
     c2, c1, c0 = quad_coeff
     b_local = local_exponent(D_mm, quad_coeff)
-    def residuals(params, w):
+    def residuals(params):
         a, b = params
         # compute PSD contribution X_t(b) for each time sample Z_pred(t) = a * sum(D^b N dD)
         X = np.nansum((D_mm**b)[None,:] * n_per_mm_all * dD_mm[None,:] , axis=1) # weighted PSD contribution
         Z_pred = a * X
-        return np.sqrt(w) * (Z_pred - Z_obs_all_mm)  # return vector of residuals
+        # return np.sqrt(w) * (Z_pred - Z_obs_all_mm)  # return vector of residuals
+        return (Z_pred - Z_obs_all_mm)
         
 
     p0 = (max(10**a0_lin, 1e-12), max(b0_lin,1e-6)) # initial guess for the parameters the solver will try to fit
@@ -1672,7 +1702,9 @@ def find_dimension_fits_sigma(df, ds):
     #starting guess for the exponent: b_sigma=2
 
     # least_squares minimizes min sum(Z_pred - Z_obs)^2
-    res = least_squares(residuals, x0=np.array(p0), args=(weights,), bounds=([0,0], [np.inf, np.inf]))# guarangees both a and b are positive # bounds=([lower_a, lower_b], [upper_a, upper_b]) defines the feasible region
+    # res = least_squares(residuals, x0=np.array(p0), args=(weights,), bounds=([0,0], [np.inf, np.inf]))
+    res = least_squares(residuals, x0=np.array(p0),bounds=([0,0], [np.inf, np.inf]))
+    # guarangees both a and b are positive # bounds=([lower_a, lower_b], [upper_a, upper_b]) defines the feasible region
     # # a_sigma >= 0 (backscatter cross section can't be negative)
     # # b_sigma [-10,10] prevent numerical instability
     a_lin, b_lin = res.x
@@ -1796,23 +1828,21 @@ def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=
     # df_sum_offset['S_sim_mixed'] = ((df_sum_offset['Ze_linear_sum_400'] / 492.65) ** (1/0.57)) 
     if len(df_mean_offset) == 0:
         df_mean_offset = ds[['Ze_400m', 'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000', 'W_400m', 'W_800m', 'W_1000m']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
+
+        for alt in [400, 800, 1000]:
+            df_mean_offset[f'W_{alt}m'] = df_mean_offset[f'W_{alt}m']*(-1)
+
+            # Limit the fallspeed from MRR to "realistic values"
+            df_mean_offset[f'W_{alt}m'][df_mean_offset[f'W_{alt}m'] > 7.] = np.nan
+            df_mean_offset[f'W_{alt}m'][df_mean_offset[f'W_{alt}m'] <= -7.] = np.nan
+
     df_mean_offset.rename(columns={'Ze_linear_400': 'Ze_linear_mean_400', 'Ze_linear_800': 'Ze_linear_mean_800', 'Ze_linear_1000': 'Ze_linear_mean_1000'}, inplace=True)
 
-    for alt in [400, 800, 1000]:
-        df_mean_offset[f'W_{alt}m'] = df_mean_offset[f'W_{alt}m']*(-1)
-
-    # Limit the fallspeed from MRR to "realistic values"
-    for alt in [400, 800, 1000]:
-        df_mean_offset[f'W_{alt}m'][df_mean_offset[f'W_{alt}m'] > 7.] = np.nan
-        df_mean_offset[f'W_{alt}m'][df_mean_offset[f'W_{alt}m'] <= 0.2] = np.nan
-
     
+   
     sums = []
     means= []
     zs_count = []
-    # for i in range(len(df)-1):
-    #     seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i+1]]
-    #     seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df['shifted_time_end'][i+1]]
     for i in range(len(df)):
         # seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
         # seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]

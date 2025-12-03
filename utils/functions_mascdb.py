@@ -525,20 +525,20 @@ def test_dominance_threshold(df, frequency, dominant_frac_threshold, fig_dir):
     
     
         # Normalized frequencies
-    plt_snowflake_heatmap_by_sector(df_env, mode="percent", title=f"Relative Frequency of Snowflake Classes by Wind Sector ({frequency} - ≥{dominant_frac_threshold})", )
+    plt_snowflake_heatmap_by_sector(df_env, mode="percent", title=f"Relative Frequency of Snowflake Classes by Wind Sector ({frequency} - ≥{dominant_frac_threshold})", cmap_base=cm.managua)
     figname = f"{new_dir}/relative_sf_class_frequency_by_wind_sector.png"
     plt.savefig(figname, format='png', bbox_inches='tight', transparent=True,dpi=300)
 
     
 
     # Absolute counts
-    plt_snowflake_heatmap_by_sector(df_env, mode="absolute", title=f"Absolute Count of Snowflake Classes by Wind Sector ({frequency} - ≥{dominant_frac_threshold})", data_max=data_max[0])
+    plt_snowflake_heatmap_by_sector(df_env, mode="absolute", title=f"Absolute Count of Snowflake Classes by Wind Sector ({frequency} - ≥{dominant_frac_threshold})", data_max=data_max[0], cmap_base=cm.managua)
     figname = f"{new_dir}/absolute_count_sf_class_frequency_by_wind_sector.png"
     plt.savefig(figname, format='png', bbox_inches='tight', transparent=True,dpi=300)
 
 
     # Graupel to Aggregate ratio
-    plt_snowflake_heatmap_by_sector(df_env, mode="ratio", class_ratio=("graupel", "aggregate"), title = f"Graupel-to-Aggregate Ratio by Wind Sector ({frequency} - ≥{dominant_frac_threshold})", figsize=(10, 2), data_max=data_max[1])
+    plt_snowflake_heatmap_by_sector(df_env, mode="ratio", class_ratio=("graupel", "aggregate"), title = f"Graupel-to-Aggregate Ratio by Wind Sector ({frequency} - ≥{dominant_frac_threshold})", figsize=(10, 2), data_max=data_max[1],cmap_base=cm.managua)
     figname = f"{new_dir}/graupel_to_aggregate_ratio_by_wind_sector.png"
     plt.savefig(figname, format='png', bbox_inches='tight', transparent=True,dpi=300)
 
