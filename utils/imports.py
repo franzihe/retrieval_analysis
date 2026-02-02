@@ -2,7 +2,7 @@ import xarray as xr          # conda install -c conda-forge xarray
 # from pymeteo import radar    # conda install -c cwebster2 pymeteo
 from glob import glob       
 import numpy as np
-
+import gc
 import datetime
 import IMProToo   # pip install IMProToo
 import gzip    # conda install -c conda-forge gzip 
@@ -32,3 +32,6 @@ from sklearn.preprocessing import MinMaxScaler
 
 from matplotlib.legend_handler import HandlerTuple
 
+from matplotlib.ticker import ScalarFormatter
+import fnmatch
+import dask

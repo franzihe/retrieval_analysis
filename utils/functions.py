@@ -1,7 +1,7 @@
 # from imports import *
 # from imports import requests, BeautifulSoup
 # import imports
-from imports import (xr, np,datetime, datetime,cm,plt,DateFormatter, pd,da, BeautifulSoup,BoundaryNorm, LinearSegmentedColormap,requests,date2num,sns, least_squares, r2_score, MinMaxScaler, Normalize)
+from imports import (xr, np,datetime, datetime,cm,plt,DateFormatter, pd,da, BeautifulSoup,BoundaryNorm, LinearSegmentedColormap,requests,date2num,sns, least_squares, r2_score, MinMaxScaler, Normalize, ScalarFormatter)
 fig_label = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)', '(g)', '(h)', '(i)', '(j)', '(k)', '(l)', '(m)', '(n)', '(o)', '(p)', '(q)', '(r)', '(s)', '(t)', '(u)', '(v)', '(w)', '(x)', '(y)', '(z)',
              '(aa)', '(bb)', '(cc)', '(dd)', '(ee)', '(ff)', '(gg)', '(hh)', '(ii)', '(jj)', '(kk)', '(ll)', '(mm)', '(nn)', '(oo)', '(pp)', '(qq)', '(rr)', '(ss)', '(tt)', '(uu)', '(vv)', '(ww)', '(xx)', '(yy)', '(zz)']
 
@@ -266,13 +266,20 @@ def empty_class_array(name, times):
         )
         
 def arrays_same_time_res(variable, da):
+    """
+    Align variable to target time grid using nearest neighbour.
+    Returns a NEW DataArray.
+    """
+    # Allocate fresh array (critical!)
+    out = xr.full_like(da, np.nan)
+
     # Get the nearest indices
     nearest_indices = da.indexes['time'].get_indexer(variable.time.values, method='nearest')
     
     # Assign values to the appropriate time index
-    da.data[nearest_indices] = variable.data
+    out.data[nearest_indices] = variable.data
     
-    return da
+    return out
 
 def fill_10min_to_1min(ds, var_name):
     # Fill the Mean wind direction over the last ten minutes before the observation time
@@ -677,7 +684,7 @@ def noise_corrected_ze(da):
 # $$Ze [dBz] = 10 \cdot log_{10}(Ze [mm^6/m^3])$$
 # $$\rightarrow Ze [mm^6/m^3] = 10 ^{dBz/10}$$
 # Convert Ze (dBz) to snowfall rate (S)
-def ze_to_snowfall_rate(Ze_dbz):
+def ze_to_snowfall_rate(Ze_dbz, a=56, b=1.2):
     # Ze to linear units
     Ze_lin = 10 ** (Ze_dbz /10)
     # Apply Z-S relationship
@@ -686,6 +693,8 @@ def ze_to_snowfall_rate(Ze_dbz):
     S_nakai_a = (Ze_lin / 107.4) ** (1/1.67)    # Nakai et al. (2021) - heavily rimed aggregate
     S_nakai_g = (Ze_lin / 227.4) ** (1/1.67)    # Nakai et al. (2021) - graupel
     S_pu = (Ze_lin / 252) ** (1/2.03)           # Pu et al. (2020) - graupel
+    S_scho = (Ze_lin / 77.61) **(1/1.22)        # Schoger et al. 2021 - Hyttalia
+    S_ensemble = (Ze_lin/a) ** (1/b)
 
 
     # convert rate per minute to mm/h
@@ -694,6 +703,8 @@ def ze_to_snowfall_rate(Ze_dbz):
     S_nakai_a = (S_nakai_a/60)#.resample(time='1H').sum()
     S_nakai_g = (S_nakai_g/60)#.resample(time='1H').sum()
     S_pu = (S_pu/60)#.resample(time='1H').sum()
+    S_scho = (S_scho/60)
+    S_ensemble = (S_ensemble/60)
     
     # df1 = S.isel(range=3).drop('range').rename('Matrosov_aggregate').to_dataframe()
     df1 = S.rename('Matrosov_aggregate').to_dataframe()
@@ -705,8 +716,11 @@ def ze_to_snowfall_rate(Ze_dbz):
     df4 = S_nakai_g.rename('Nakai_graupel').to_dataframe()
     # df5 = S_pu.isel(range=3).drop('range').rename('Pu_graupel').to_dataframe()
     df5 = S_pu.rename('Pu_graupel').to_dataframe()
+    df7 = S_scho.rename('Schoger').to_dataframe()
+    df6 = S_ensemble.rename(f'S_{a}_{b}').to_dataframe()
     
-    combined_df = pd.concat([df1, df2, df3, df4, df5], axis=1) # Use axis=1 to combine as new columns
+    combined_df = pd.concat([df1, df2, df3, df4, df5, df7, #df6
+                             ], axis=1) # Use axis=1 to combine as new columns
     return  combined_df # in mm/hr
 
 
@@ -998,7 +1012,7 @@ def model(x, a, b):
     # return (x/a)**(1/b)
     
 
-def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1H", min_rate=0.1, altitudes=[400, 800, 1000]):
+def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1H", min_rate=0.1, altitudes=[400, 800, 1000], a=56, b=1.2):
     if mode == "event":
         notna_idx = df_sum['precipitation'].dropna().index
         notna_idx = notna_idx.append(pd.Index([df_sum.index[-1]]))
@@ -1018,23 +1032,23 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
     dt = segment_bounds.to_series().diff().dt.total_seconds()
     for i in range(len(segment_bounds)):
         if i == 0:
-            seg = df_sum[:segment_bounds[0]]
-            seg_m = df_mean[:segment_bounds[0]]
-            seg_sf = sf_class[:segment_bounds[0]]
+            seg = df_sum.loc[:segment_bounds[0]].copy()
+            seg_m = df_mean.loc[:segment_bounds[0]].copy()
+            seg_sf = sf_class.loc[:segment_bounds[0]].copy()
             delta_h = dt.loc[:segment_bounds[0]]
 
         else:
-            seg = df_sum.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
-            seg_m = df_mean.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
-            seg_sf = sf_class.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
-            delta_h = dt.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]]
+            seg = df_sum.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]].copy()
+            seg_m = df_mean.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]].copy()
+            seg_sf = sf_class.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]].copy()
+            delta_h = dt.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]].copy()
 
         # filter: remove warm segments (>2 °C)
         all_T = seg_m['air_temperature'].dropna()
         if (len(all_T) != 0) and (sum(all_T > 2.) >=1):
-            seg[:] = np.nan
-            seg_m[:] = np.nan
-            seg_sf[:] = np.nan
+            seg.loc[:,:] = np.nan
+            seg_m.loc[:,:] = np.nan
+            seg_sf.loc[:,:] = np.nan
 
         sums.append(seg.sum(numeric_only=True, min_count=1))
         means.append(seg_m.mean(numeric_only=True, skipna=True))
@@ -1042,10 +1056,11 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
         ma_cc = seg_sf[['flake_Dmax', 'fallspeed', 'gan3d_mass']].count()
         ma_cc = ma_cc.rename({"flake_Dmax":"count_flake_Dmax", "fallspeed":"count_fallspeed", "gan3d_mass":"count_gan3d_mass"})
         counts.append(ma_cc)
-        zs_cc = seg[['precipitation','Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000'
-                     ]].count()
-        zs_cc = zs_cc.rename({"precipitation":"count_precip", "Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"
-                              })
+        zs_cc = seg[['precipitation'#,'Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000'
+        ]].count()
+        zs_cc = zs_cc.rename({"precipitation":"count_precip", #"Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"
+        #                       
+        })
         zs_counts.append(zs_cc)
         
 
@@ -1085,16 +1100,17 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
     df_out[df_out["rate_mm_h"] < min_rate] = np.nan # limit Geonor precipitation to be above 0.1 mm/h
     df_out['start_time'] = df_out.index - pd.to_timedelta(df_out['delta_h'] * 3600, unit='sec')
 
-    for alt in altitudes:
+    # for alt in altitudes:
         # Z from linear sums/means
-        df_out[f'Z_from_linear_sum_{alt}'] = df_out[f'Ze_linear_sum_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
-        df_out[f'Z_from_linear_mean_{alt}'] = df_out[f'Ze_linear_mean_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
+        # df_out[f'Z_from_linear_sum_{alt}'] = df_out[f'Ze_linear_sum_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
+        # df_out[f'Z_from_linear_mean_{alt}'] = df_out[f'Ze_linear_mean_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
         # Rates
-        for name in ["Matrosov_a", "Bracci_a", "Nakai_a", "Nakai_g", "Pu_g"]:
-            df_out[f"{name}_{alt}_mm_h"] = df_out[f"{name}_{alt}"] / df_out["delta_h"]
+    alt = "400"
+    for name in ["Matrosov_aggregate", "Bracci_aggregate", "Nakai_aggregate", "Nakai_graupel", "Pu_graupel", "Schoger", f"S_{a}_{b}"]:
+        df_out[f"{name}_{alt}_mm_h"] = df_out[f"{name}_{alt}m"] / df_out["delta_h"]
 
-        # Matrosov from Ze_sum
-        df_out[f'Matrosov_from_ze_sum_{alt}'] = ((df_out[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_out["delta_h"])  # convert rate to mm
+        # # Matrosov from Ze_sum
+        # df_out[f'Matrosov_from_ze_sum_{alt}'] = ((df_out[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_out["delta_h"])  # convert rate to mm
 
     df_out.index.name = 'time'
     # ds_out = xr.concat([df_out.to_xarray(), psd], "time")
@@ -1117,8 +1133,13 @@ def find_psd_in_timestep(seg_sf, delta_h, index):
     bin_idx = np.digitize(seg_sf['flake_Dmax'], bin_edges) - 1 # Return the indices of the bins to which each value in input array belongs
 
     # Compute mean v and m per diameter bin
-    v_bin = np.array([ np.nanmean(seg_sf['fallspeed'][bin_idx==i]) if np.any(bin_idx==i) else np.nan for i in range(len(bin_centers)) ]) # fall speed per bin [m/s]
-    m_bin = np.array([np.nanmean(seg_sf['gan3d_mass'][bin_idx==i]) if np.any(bin_idx==i) else np.nan for i in range(len(bin_centers))]) # mass per particle for each bin
+    velocity = seg_sf['fallspeed'].values
+    valid = ~np.isnan(velocity)
+    v_bin = np.array([np.nanmean(velocity[(bin_idx==i) & valid]) if np.any((bin_idx==i) & valid) else np.nan for i in range(len(bin_centers)) ]) # fall speed per bin [m/s]
+    # m_bin = np.array([np.nanmean(seg_sf['gan3d_mass'][bin_idx==i]) if np.any(bin_idx==i) else np.nan for i in range(len(bin_centers))]) 
+    mass = seg_sf['gan3d_mass'].values
+    valid = ~np.isnan(mass)
+    m_bin = np.array([np.nanmean(mass[(bin_idx == i) & valid]) if np.any((bin_idx == i) & valid) else np.nan for i in range(len(bin_centers))])# mass per particle for each bin
 
     # count particles per diameter bin
     counts, _ = np.histogram(seg_sf['flake_Dmax'], bins=bin_edges)
@@ -1202,7 +1223,9 @@ def plt_geonor_vs_ze_vs_precip_scatter(ylabels, class_based=False,  df=None, df_
         
     # Shared formatting
     # Generate line for Matrosov
-    x_line = np.linspace(0, 50, 200)
+    # x_line = np.linspace(0, 50, 200)
+    x_line = np.logspace(np.log10(xlim[0]), np.log10(xlim[1]), 300)
+
     y_line = 56 * x_line**1.2
 
     # 1-1 line
@@ -1348,8 +1371,8 @@ def get_ds_in_precip_event(df, ds):
 
     slices = []
     for end_time, start_time in df['start_time'].items():
-        t0 = start_time + pd.Timedelta(seconds=1)
-        t1 = end_time
+        t0 = start_time #+ pd.Timedelta(seconds=1)
+        t1 = end_time-pd.Timedelta(seconds=1)
         # Select data from ds 
         # ds_subset = ds[['Ze', 'height']].sel(time=slice(t0, t1))
         ds_subset = ds.sel(time=slice(t0, t1))
@@ -1359,7 +1382,7 @@ def get_ds_in_precip_event(df, ds):
 
         slices.append(ds_subset)
 
-    result = xr.concat(slices, dim='time')
+    result = xr.concat(slices, dim='time').sortby("time")
 
     return result
 
@@ -1389,7 +1412,7 @@ def plt_fallspeed_distribution_by_class(df_only_class, binwidth=0.25,stat='perce
 
     # plt.savefig(os.path.join(FIG_DIR, 'fallspeed', 'aggregate_graupel_mixed_pristine_precip_event.png'), format='png', bbox_inches='tight', dpi=300, transparent=True,)
 
-def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze, H_w_prob, H_w):
+def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze, H_w_prob, H_w, H_ze_w_prob, H_ze_w):
     cmap = cm.managua_r #cm.glasgow_r  # define the colormap
     # extract all colors from the colormap
     cmaplist = [cmap(i) for i in range(cmap.N)]
@@ -1397,52 +1420,106 @@ def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze, H_w_prob, H_w):
     cmaplist[0] = (255,255,255, 0.9)
     # create the new map
     cmap = LinearSegmentedColormap.from_list(
-    'Custom cmap', cmaplist, 14) # cmap.N
+    'Custom cmap', cmaplist, 40) # cmap.N
     # define the bins and normalize
     # bounds = np.linspace(0, 7e7, 11)
     # bounds = np.arange(0., 0.003, 0.0002)
-    bounds_z = np.round(np.linspace(0., 0.004, 15), 4)
+    # bounds_z = np.round(np.linspace(0., 0.004, 15), 4)
+    bounds_z = np.arange(0., 0.004, 0.0001)
     norm_z = BoundaryNorm(bounds_z, cmap.N)
 
-    bounds_w = np.round(np.linspace(0., 0.0025, 15), 4)
+    # bounds_w = np.round(np.linspace(0., 0.0025, 15), 4)
+    bounds_w = bounds_z
     norm_w = BoundaryNorm(bounds_w, cmap.N)
 
+    bounds_z_w = bounds_z
+    norm_z_w = BoundaryNorm(bounds_z_w, cmap.N)
+
     fig, axs = plt.subplots(
-                nrows=2, ncols=3,
-                figsize=(15,10), sharey=True, 
-                )
+                nrows=3, ncols=3,
+                figsize=(15,15), )#sharey=True, 
+                
     axs = np.atleast_2d(axs)    # safe even if n_cols=2
         
     for (i,ax), cat in zip(enumerate(axs.flatten()), ['aggregate', 'graupel', 'mixed',
-                                                      'aggregate', 'graupel', 'mixed']):
+                                                      'aggregate', 'graupel', 'mixed', 'aggregate', 'graupel', 'mixed']):
                
-                if i == 0 or i == 1 or i==2:
-                    pcm = ax.pcolormesh(ze_bins, height_bins, H_ze_prob[cat], cmap=cmap, norm=norm_z) 
+                if i in [0, 1, 2]:
+                    # pcm = ax.pcolormesh(ze_bins, height_bins, H_ze_prob[cat], cmap=cmap, norm=norm_z) 
+                    # pcm = ax.pcolormesh(np.arange(-10, 31, 1), np.arange(100, 3100,100), H_ze_prob[cat], cmap=cmap, norm=norm_z) #,levels=bounds_z,
+                    pcm = ax.contourf(np.arange(-10, 31, 1), np.arange(100, 3100,100), H_ze_prob[cat], 
+                                      levels=bounds_z, 
+                                      cmap=cmap, norm=norm_z, extend="max")
+                    
+
 
                     # title with raw counts
                     total = int(np.nansum(H_ze[cat]))
                     ax.set_title(f"{cat}\n(counts={total})".title(), fontweight='bold', color=custom_colors[cat])
                     ax.set_xlabel("Reflectivity [dBz]")
-                if i == 3 or i == 4 or i == 5:
-                    pcm2 = ax.pcolormesh(W_bins, height_bins, H_w_prob[cat], cmap=cmap, norm=norm_w) 
-                    ax.vlines(0,0,30, linestyle='--', color='darkgrey')
+                elif i in [3, 4, 5]:
+                    # pcm2 = ax.pcolormesh(np.arange(-4, 4.1, 0.1), np.arange(100, 3100,100), H_w_prob[cat], cmap=cmap, norm=norm_w) 
+                    pcm2 = ax.contourf(np.arange(-4, 4.1, 0.1), np.arange(100, 3100, 100), H_w_prob[cat], levels=bounds_w, cmap=cmap, norm=norm_w, extend="max")
+                    ax.vlines(0,0,3000, linestyle='--', color='darkgrey')
                     total = int(np.nansum(H_w[cat]))
                     ax.set_title(f"\n(counts={total})".title(), fontweight='bold', color=custom_colors[cat])
                     ax.set_xlabel("Doppler Velocity [m s$^{{-1}}$]")
 
+                elif i in [6, 7, 8]:
+                    # Plot
+                    pcm3 = ax.contourf(np.arange(-4, 4.1, 0.1), np.arange(-10, 31, 1), H_ze_w_prob[cat], levels=bounds_z_w, cmap=cmap, norm=norm_z_w, extend="max")
+                    total = int(np.nansum(H_ze_w[cat]))
+                    ax.set_title(f"\n(counts={total})".title(), fontweight='bold', color=custom_colors[cat])
+                    ax.vlines(0,-10,30, linestyle='--', color='darkgrey')
+                    ax.set_ylabel("Reflectivity [dBz]")
+                    ax.set_xlabel("Doppler Velocity [m s$^{{-1}}$]")
+            
+
                 ax.grid(True, ls=':')
                 ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
-                if i == 0 or i == 3:
-                        ax.set_ylabel("Height [m]")
+                if i in [0, 3]:
+                    ax.set_ylim([0, 3000])
+                    ax.set_ylabel("Height [m]")
+                
 
 
     plt.tight_layout(rect=[0, 0, 0.9, 1])   # leave room for cbars
 
-    cax = fig.add_axes([0.89, 0.57 , 0.015, 0.35]) # left, bottom, width, height
-    fig.colorbar(pcm, cax=cax, orientation='vertical', label='Probability', extend='max')
+    cax = fig.add_axes([0.89, 0.71 , 0.015, 0.24]) # left, bottom, width, height
+    cbar = fig.colorbar(pcm, ticks=bounds_z[::4], cax=cax, orientation='vertical', label='Probability', extend='max', spacing="proportional")
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_powerlimits((-2, 2))
+    formatter.set_scientific(True)
+    cbar.formatter = formatter
+    cbar.update_ticks()
+    # move the exponent text to be centered above bar
+    offset = cbar.ax.yaxis.get_offset_text()
+    offset.set_horizontalalignment('center')
+    offset.set_x(0.5)
 
-    cax = fig.add_axes([0.89, 0.09 , 0.015, 0.35]) # left, bottom, width, height
-    fig.colorbar(pcm2, cax=cax, orientation='vertical', label='Probability', extend='max')
+    cax = fig.add_axes([0.89, 0.38 , 0.015, 0.24]) # left, bottom, width, height
+    cbar2 = fig.colorbar(pcm2, ticks=bounds_w[::4], cax=cax, orientation='vertical', label='Probability', extend='max', spacing="proportional")
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_powerlimits((-2, 2))
+    formatter.set_scientific(True)
+    cbar2.formatter = formatter
+    cbar2.update_ticks()
+    # move the exponent text to be centered above bar
+    offset = cbar2.ax.yaxis.get_offset_text()
+    offset.set_horizontalalignment('center')
+    offset.set_x(0.5)
+
+    cax = fig.add_axes([0.89, 0.05 , 0.015, 0.24]) # left, bottom, width, height
+    cbar3 = fig.colorbar(pcm3, ticks=bounds_z_w[::4], cax=cax, orientation='vertical', label='Probability', extend='max', spacing="proportional")
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_powerlimits((-2, 2))
+    formatter.set_scientific(True)
+    cbar3.formatter = formatter
+    cbar3.update_ticks()
+    # move the exponent text to be centered above bar
+    offset = cbar3.ax.yaxis.get_offset_text()
+    offset.set_horizontalalignment('center')
+    offset.set_x(0.5)
 
 def plt_precip_scatter_literature(df, title=" "):
     cmap = cm.managua  # define the colormap
@@ -1453,9 +1530,10 @@ def plt_precip_scatter_literature(df, title=" "):
     'Custom cmap', cmaplist, 7) # cmap.N
     equations = {"Matrosov_a": ['Aggregate', "(2007)", custom_cmap(1)],#["Z = 56 S$^{1.2}$", ], 
              "Bracci_a": ['Aggregate', "et al. (2022)", custom_cmap(0)],#["Z = 134 S$^{1.25}$", ],
-             "Nakai_a": ['Aggregate', "et al. (2022)", custom_cmap(2)],#["Z = 107.4 S$^{1.67}$"],
-             "Nakai_g": ['Graupel', "et al. (2022)", custom_cmap(4)], # ["Z = 227.4 S$^{1.67}$", ],
+            #  "Nakai_a": ['Aggregate', "et al. (2022)", custom_cmap(2)],#["Z = 107.4 S$^{1.67}$"],
+            #  "Nakai_g": ['Graupel', "et al. (2022)", custom_cmap(4)], # ["Z = 227.4 S$^{1.67}$", ],
              "Pu_g" : ['Graupel', "et al. (2020)", custom_cmap(5)], #["Z = 252 S$^{2.03}$", ]
+             
              }
 
     fig, axsm = plt.subplots(2, 3, figsize=(15, 10, ), sharex=True, sharey=True)
@@ -1800,7 +1878,7 @@ def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_l
 
 
 
-def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=pd.DataFrame(), min_rate=0.1, ):
+def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset, min_rate=0.1, a=56, b=1.2):
 
 
     
@@ -1816,27 +1894,29 @@ def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=
     # subtract from index
     df['shifted_time_end'] = df.index - rounded_td
 
-    if len(df_sum_offset) == 0:
-        df_sum_offset = ds[['Matrosov_a_400', 'Bracci_a_400', 'Nakai_a_400', 'Nakai_g_400', 'Pu_g_400',
-                    'Matrosov_a_800', 'Bracci_a_800', 'Nakai_a_800', 'Nakai_g_800', 'Pu_g_800',
-                    'Matrosov_a_1000', 'Bracci_a_1000', 'Nakai_a_1000', 'Nakai_g_1000', 'Pu_g_1000',
-                    'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
+    # if len(df_sum_offset) == 0:
+    #     df_sum_offset = ds[['Matrosov_a_400', 'Bracci_a_400', 'Nakai_a_400', 'Nakai_g_400', 'Pu_g_400', f'S_{a}_{b}_400',
+    #                 'Matrosov_a_800', 'Bracci_a_800', 'Nakai_a_800', 'Nakai_g_800', 'Pu_g_800', f'S_{a}_{b}_800',
+    #                 'Matrosov_a_1000', 'Bracci_a_1000', 'Nakai_a_1000', 'Nakai_g_1000', 'Pu_g_1000', f'S_{a}_{b}_1000',
+    #                 'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
+    df_sum_offset = df_sum_offset.copy()
     df_sum_offset.rename(columns={'Ze_linear_400': 'Ze_linear_sum_400', 'Ze_linear_800': 'Ze_linear_sum_800', 'Ze_linear_1000': 'Ze_linear_sum_1000'}, inplace=True)
     # df_sum_offset['S_sim_all'] = ((df_sum_offset['Ze_linear_sum_400'] / 273.33) ** (1/0.31)) 
     # df_sum_offset['S_sim_aggregate'] = ((df_sum_offset['Ze_linear_sum_400'] / 5006.19) ** (1/1.26))  
     # df_sum_offset['S_sim_graupel'] = ((df_sum_offset['Ze_linear_sum_400'] / 316.87) ** (1/0.39)) 
     # df_sum_offset['S_sim_mixed'] = ((df_sum_offset['Ze_linear_sum_400'] / 492.65) ** (1/0.57)) 
-    if len(df_mean_offset) == 0:
-        df_mean_offset = ds[['Ze_400m', 'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000', 'W_400m', 'W_800m', 'W_1000m']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
+    # if len(df_mean_offset) == 0:
+    #     df_mean_offset = ds[['Ze_400m', 'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000', 'W_400m', 'W_800m', 'W_1000m']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
 
-        for alt in [400, 800, 1000]:
-            df_mean_offset[f'W_{alt}m'] = df_mean_offset[f'W_{alt}m']*(-1)
+    df_mean_offset = df_mean_offset.copy()
+    # for alt in [400, 800, 1000]:
+    alt = 400
+    # Limit the fallspeed from MRR to "realistic values"
+    mask = df_mean_offset[f'W_{alt}m'].abs() > 7.
+    df_mean_offset.loc[mask, f'W_{alt}m'] = np.nan
+            # 
 
-            # Limit the fallspeed from MRR to "realistic values"
-            df_mean_offset[f'W_{alt}m'][df_mean_offset[f'W_{alt}m'] > 7.] = np.nan
-            df_mean_offset[f'W_{alt}m'][df_mean_offset[f'W_{alt}m'] <= -7.] = np.nan
-
-    df_mean_offset.rename(columns={'Ze_linear_400': 'Ze_linear_mean_400', 'Ze_linear_800': 'Ze_linear_mean_800', 'Ze_linear_1000': 'Ze_linear_mean_1000'}, inplace=True)
+    # df_mean_offset.rename(columns={'Ze_linear_400': 'Ze_linear_mean_400', 'Ze_linear_800': 'Ze_linear_mean_800', 'Ze_linear_1000': 'Ze_linear_mean_1000'}, inplace=True)
 
     
    
@@ -1846,23 +1926,26 @@ def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=
     for i in range(len(df)):
         # seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
         # seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
-        step = df['delta_h'][i] * 60 - 1
-        start = df['shifted_time_end'][i] - pd.Timedelta(minutes=step)
-        seg = df_sum_offset.loc[start : df['shifted_time_end'][i]]
-        seg_m = df_mean_offset.loc[start : df['shifted_time_end'][i]]
+        delta_h_i = df['delta_h'].iloc[i]
+        shifted_end = df['shifted_time_end'].iloc[i]
+
+        step = delta_h_i * 60 - 1
+        start = shifted_end - pd.Timedelta(minutes=step)
+        seg = df_sum_offset.loc[start : shifted_end]
+        seg_m = df_mean_offset.loc[start : shifted_end]
         
     
         # print(df.index[i], seg)
         sums.append(seg.sum(numeric_only=True, min_count=1))
         means.append(seg_m.mean(numeric_only=True, skipna=True))
 
-        zs_cc = seg[['Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000']].count()
-        zs_cc = zs_cc.rename({"Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"})
-        zs_count.append(zs_cc)
+        # zs_cc = seg[['Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000']].count()
+        # zs_cc = zs_cc.rename({"Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"})
+        # zs_count.append(zs_cc)
 
 
     df_offset = pd.concat([df[['shifted_time_end', 'Geonor', 'air_temperature', 'wind_direction', 'wind_speed', 'snowflake_class_name', 'fallspeed', 'flake_Dmax', 'gan3d_mass' ,'delta_h', 'rate_mm_h', 'count_fallspeed', 'count_flake_Dmax', 'count_gan3d_mass', 'count_precip']],
-                           pd.DataFrame(zs_count).set_index(df.index[:]),
+                        #    pd.DataFrame(zs_count).set_index(df.index[:]),
                                     pd.DataFrame(sums).set_index(df.index[:]), 
                                     pd.DataFrame(means).set_index(df.index[:]), ], axis=1)# df['shifted_time_end'][1:].reset_index(drop=True)], axis=1)
 
@@ -1872,19 +1955,19 @@ def apply_timeoffset_to_df(df, ds, df_sum_offset=pd.DataFrame(), df_mean_offset=
     df_offset['start_time'] = df_offset.index - pd.to_timedelta(df_offset['delta_h'] * 3600, unit='sec')
 
 
-    for alt in [400, 800, 1000]:
-        # Compute Z from linear sums
-        # Compute safely: return NaN for invalid values
-        df_offset[f'Z_from_linear_sum_{alt}'] = df_offset[f'Ze_linear_sum_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
-        df_offset[f'Z_from_linear_mean_{alt}'] = df_offset[f'Ze_linear_mean_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
-
-        for name in ["Matrosov_a", "Bracci_a", "Nakai_a", "Nakai_g", "Pu_g"]:
-            df_offset[f"{name}_{alt}_mm_h"] = df_offset[f"{name}_{alt}"] / df_offset["delta_h"]
+    # for alt in [400, 800, 1000]:
+        # # Compute Z from linear sums
+        # # Compute safely: return NaN for invalid values
+        # df_offset[f'Z_from_linear_sum_{alt}'] = df_offset[f'Ze_linear_sum_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
+        # df_offset[f'Z_from_linear_mean_{alt}'] = df_offset[f'Ze_linear_mean_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
+    alt = "400"
+    for name in ["Matrosov_aggregate", "Bracci_aggregate", "Nakai_aggregate", "Nakai_graupel", "Pu_graupel", "Schoger",f"S_{a}_{b}"]:
+            df_offset[f"{name}_{alt}_mm_h"] = df_offset[f"{name}_{alt}m"] / df_offset["delta_h"]
 
         
 
-        # Calculate Matrosov based on Ze_sum
-        df_offset[f'Matrosov_from_ze_sum_{alt}'] = ((df_offset[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_offset["delta_h"])  # convert rate to mm
+        # # Calculate Matrosov based on Ze_sum
+        # df_offset[f'Matrosov_from_ze_sum_{alt}'] = ((df_offset[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_offset["delta_h"])  # convert rate to mm
 
     # for class_name in ['all', 'aggregate', 'graupel', 'mixed']:
     #     df_offset[f'S_sim_{class_name}_mm_h'] = df_offset[f'S_sim_{class_name}'] / df_offset["delta_h"]
