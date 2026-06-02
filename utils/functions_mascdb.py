@@ -1,21 +1,27 @@
 # from imports import *
 # from imports import requests, BeautifulSoup
 # import imports
-from imports_mascdb import (cm, np, ListedColormap,BoundaryNorm, plt, sns, pd, Patch, OrderedDict, mdates)
+from imports_mascdb import (cm, np, ListedColormap,BoundaryNorm, plt, sns, pd, Patch, OrderedDict, mdates, LinearSegmentedColormap, GridSpec, date2num,  DateFormatter, Line2D, Patch)
 import pathlib
 
 
 fig_label = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)', '(g)', '(h)', '(i)', '(j)', '(k)', '(l)', '(m)', '(n)', '(o)', '(p)', '(q)', '(r)', '(s)', '(t)', '(u)', '(v)', '(w)', '(x)', '(y)', '(z)',
              '(aa)', '(bb)', '(cc)', '(dd)', '(ee)', '(ff)', '(gg)', '(hh)', '(ii)', '(jj)', '(kk)', '(ll)', '(mm)', '(nn)', '(oo)', '(pp)', '(qq)', '(rr)', '(ss)', '(tt)', '(uu)', '(vv)', '(ww)', '(xx)', '(yy)', '(zz)']
+cmap = cm.managua
+# extract all colors from the colormap
+cmaplist = [cmap(i) for i in range(cmap.N)]
 
 custom_colors = {  
-                     'aggregate': cm.lipariS(2),  
-                     'graupel':cm.lipariS(4),   
-                     'mixed': cm.lipariS(3),
-                     'pristine':cm.lipariS(0),
-                
-                
-                }
+                     'aggregate': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(1),  
+                     'graupel':LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(4),   
+                     'mixed': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(2),
+                     'campaign': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(5),
+                     'pristine': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(5),
+                     'North': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(1),
+                     'South':LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(4),   
+                     'East': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(2),
+                     'West': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(5),
+}
 
 def wind_sector(deg):
     if (deg >= 337.5) or (deg < 22.5):
@@ -583,3 +589,224 @@ def test_dominance_threshold(df, frequency, dominant_frac_threshold, fig_dir):
     plt.savefig(figname, format='png', bbox_inches='tight', transparent=True,dpi=300)
     
     return df_env
+
+def plot_pcolormesh_with_cbar(ax, fig, data, x, y, cmap, norm, cbar_bounds=None, cbar_label=None):
+    pcm = ax.pcolormesh(x, y, data, cmap=cmap, norm=norm, shading='auto')
+
+    # dynamic placement based on axis
+    bbox = ax.get_position()
+    cbaxes = fig.add_axes([
+        bbox.x1-0.07,# + 0.01,
+        bbox.y0,
+        0.012,
+        bbox.height
+    ])
+
+    cbar = plt.colorbar(pcm, cax=cbaxes, extend='both', orientation='vertical')
+  
+    if cbar_label is not None:
+        cbar.ax.set_ylabel(cbar_label)
+
+    if cbar_bounds is not None:
+        cbar.set_ticks(cbar_bounds)
+
+    return pcm
+
+
+def plt_case_figure(ds_case, df_case, precip, da_zoomed, day_start, day_end, case_name, case_color, fig_label_start ="a", ylim=[0, 18]):
+    fig = plt.figure(figsize=(10,12))
+    bounds = np.linspace(0,28, 17)
+    norm=BoundaryNorm(boundaries=bounds, ncolors=256)
+
+    # 5 rows total: 1 for precipitation + 4 for flakes
+    gs = GridSpec(
+        nrows=3,
+        ncols=4,
+        height_ratios=[2, 2, 4],  # precipitation gets more height
+        hspace=0.15, wspace=0.0
+    )
+
+    met_axes = []
+    # -----------------------
+    # Reflectivity
+    # -----------------------
+    ax_ref = fig.add_subplot(gs[0, :])
+    met_axes.append(ax_ref)
+
+    # compute event-wise offset
+    df_case['time_offset'] = df_case['shifted_time_end'] - df_case.index
+    # approximate to median offset (for plotting only)
+    median_offset = df_case['time_offset'].median()
+    shifted_time = ds_case['time'] - median_offset
+
+    time_vals = date2num(shifted_time.values) #ds_case['time'].values)
+    range_vals = ds_case['range'].values
+    Ze_vals = ds_case['Ze'].values.T
+
+    plot_pcolormesh_with_cbar(ax=ax_ref, 
+                                  fig=fig, 
+                                  data=Ze_vals, 
+                                  x=time_vals, 
+                                  y=range_vals, 
+                                  cmap=cm.managua_r, 
+                                  norm=norm, 
+                                  cbar_bounds=bounds[::2], cbar_label="Reflectivity [dBZ]")
+    
+    ax_ref.hlines(4., time_vals[0], time_vals[-1], colors='k', linestyles=':', alpha=0.85, label='$400\,m$')
+
+    ax_ref.set_title(f"{case_name}: {day_start:%Y-%m-%d}", fontweight="bold", color=case_color)
+
+    ax_ref.set_ylabel("Height [m]")
+    ax_ref.legend(loc='upper center')
+
+    ax_ref.set_ylim(0, range_vals.max())
+    ax_ref.set_yticks(np.arange(0,35, 5))
+    ax_ref.set_yticklabels(np.arange(0, 3500, 500))  
+
+    # -----------------------
+    # Dominant habit
+    # -----------------------
+    # ax_habit = fig.add_subplot(gs[1, :])
+    # met_axes.append(ax_habit)
+
+    order = [#'pristine', 
+    'mixed', 'graupel', 'aggregate']
+    keys = [f"{name}_60" for name in order]
+    markers_dict = {'mixed': 'h', 'graupel':'^', 'aggregate':'*'}
+
+    # habit_counts=[]
+    # markers = [#'o', 
+    # 'h', '^', '*',]
+    # for y_pos, (name, key) in enumerate(zip(order, keys)):
+    #     habit = df_case[df_case['snowflake_class_name_60'] == name]['snowflake_class_name_60']
+    #     # time_vals = date2num(habit.index)
+        
+    #     y_vals = np.full(len(habit), y_pos)
+        
+    #     habit_counts.append(len(habit))
+    #     ax_habit.plot(
+    #         time_vals, 
+    #         y_vals, 
+    #         marker=markers[y_pos], 
+    #         linestyle='None', 
+    #         color=custom_colors[name], 
+    #         markersize=14,
+    #         label=name.title(),
+    #         alpha=0.7)
+        
+    # ax_habit.set_yticks(range(3))
+    # ax_habit.set_yticklabels([
+    # f"{name.title()} ({cnt})"
+    # for name, cnt in zip(order, habit_counts)])
+    # ax_habit.set_ylim(-0.2, 2.2)
+
+    # -----------------------
+    # Precipitation
+    # -----------------------
+    ax_precip = fig.add_subplot(gs[1, :])
+    met_axes.append(ax_precip)
+
+    ax_precip.bar(
+    precip['start_time'],
+    precip['rate_mm_h'],
+    width=pd.to_timedelta(precip['delta_h'], unit='h'),
+    align='edge', color="k", alpha=0.7, edgecolor='k'
+)
+    ax_precip.set_ylabel("[mm  h$^{-1}$]")
+    # ax_precip.legend(loc='best')
+    ax_precip.set_ylim(ylim)
+
+    
+
+    habit_counts = {name: len(df_case[df_case['snowflake_class_name_60'] == name]) for name in order}
+    for name in order:
+        habit_data = df_case[df_case['snowflake_class_name_60'] == name]
+        if not habit_data.empty:
+            midpoint_time = (
+                habit_data['start_time'] +
+                pd.to_timedelta(habit_data['delta_h']/2, unit='h')
+            )
+
+            ax_precip.scatter(
+                midpoint_time,
+                np.full(len(habit_data), ax_precip.get_ylim()[1] * 0.9), #16.5),#),
+                marker=markers_dict[name],
+                color=custom_colors[name],
+                s=100,
+                # label=name,
+                alpha=0.7
+            )
+            # print((habit_data.index - habit_data['start_time']).head())
+            # print(pd.to_timedelta(habit_data['delta_h'], unit='h').head())
+
+    # combined legend for precip and habit
+    legend_elements = []
+    # habits
+    for name in reversed(order):
+        if habit_counts[name] > 0:
+            legend_elements.append(
+                Line2D(
+                    [0], [0],
+                    marker=markers_dict[name],
+                    color='w',
+                    markerfacecolor=custom_colors[name],
+                    markersize=12,
+                    alpha=0.7,
+                    label=f"{name.title()} ({habit_counts[name]})"
+                )
+            )
+
+    # precipitation bar
+    legend_elements.append(Patch(facecolor='k', edgecolor='k', alpha=0.7, label='Geonor'))
+
+    ax_precip.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1.01, .5), borderaxespad=0., frameon=True)
+
+    # -----------------------
+    # Flake images (nested grid)
+    # -----------------------
+
+    # Create a subgridspec that spans rows 2: and all columns
+    gs_flakes = gs[2:, :].subgridspec(4, 4, hspace=0.02, wspace=0.002)
+
+
+    for i in range(16):
+        row = i//4
+        col = i % 4
+        ax = fig.add_subplot(gs_flakes[row, col])
+        
+        # label only first flake axis
+        if i == 0:
+            ax.text(-0.25, 0.95, f"({fig_label_start})", transform=ax.transAxes, fontweight="bold", horizontalalignment='center',verticalalignment='center',)
+ 
+        img = da_zoomed.isel(flake_id=i)
+        ax.imshow(img, cmap='gray', vmin=0, vmax=256)
+        ax.set_aspect('equal')
+
+        ax.set_axis_off()
+
+    # -----------------------
+    # Formatting
+    # -----------------------
+    date_form = DateFormatter("%H:%M")
+    for i, ax in enumerate(met_axes):
+        ax.set_xlim([day_start, day_end])
+        ax.xaxis.set_major_formatter(date_form)
+        ax.xaxis_date()
+        ax.tick_params(axis='x', labelrotation=0)
+        ax.xaxis.grid(ls=':')
+        ax.text(0.02, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
+        if i==0 or i == 1 or i == 2:
+            ax.yaxis.grid(ls=':')
+
+    # plt.tight_layout()
+    fig.subplots_adjust(right=0.82)
+    return fig
+
+def filter_events(ds_case):
+    ds_case = ds_case[(ds_case['rate_mm_h'] >= 2.) & (ds_case['rate_mm_h'] <= 3.)]
+    ds_case = ds_case[ds_case['delta_h'] == 0.05]
+    return ds_case
+
+def select_flakes_best_quality(db, n=16):
+    best = db.triplet['flake_quality_xhi'].nlargest(n)
+    return best.index.tolist()

@@ -1,7 +1,7 @@
 # from imports import *
 # from imports import requests, BeautifulSoup
 # import imports
-from imports import (xr, np,datetime, datetime,cm,plt,DateFormatter, pd,da, BeautifulSoup,BoundaryNorm, LinearSegmentedColormap,requests,date2num,sns, least_squares, r2_score, MinMaxScaler, Normalize, ScalarFormatter)
+from imports import (xr, np,datetime, datetime,cm,plt,DateFormatter, pd,da, BeautifulSoup,BoundaryNorm, LinearSegmentedColormap,requests,date2num,sns, least_squares, r2_score, MinMaxScaler, Normalize, ScalarFormatter, Rectangle, Patch)
 fig_label = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)', '(g)', '(h)', '(i)', '(j)', '(k)', '(l)', '(m)', '(n)', '(o)', '(p)', '(q)', '(r)', '(s)', '(t)', '(u)', '(v)', '(w)', '(x)', '(y)', '(z)',
              '(aa)', '(bb)', '(cc)', '(dd)', '(ee)', '(ff)', '(gg)', '(hh)', '(ii)', '(jj)', '(kk)', '(ll)', '(mm)', '(nn)', '(oo)', '(pp)', '(qq)', '(rr)', '(ss)', '(tt)', '(uu)', '(vv)', '(ww)', '(xx)', '(yy)', '(zz)']
 
@@ -27,14 +27,25 @@ cmap = LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)
                 
                 
 #                 }
+# custom_colors = {  
+#                      'aggregate': cmap(1),  
+#                      'graupel':cmap(4),   
+#                      'mixed': cmap(2),
+#                      'pristine':cmap(5),
+                
+                
+#                 }
 custom_colors = {  
-                     'aggregate': cmap(1),  
-                     'graupel':cmap(4),   
-                     'mixed': cmap(2),
-                     'pristine':cmap(5),
-                
-                
-                }
+                     'aggregate': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(1),  
+                     'graupel':LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(4),   
+                     'mixed': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(2),
+                     'campaign': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(5),
+                     'pristine': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(5),
+                     'North': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(1),
+                     'South':LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(4),   
+                     'East': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(2),
+                     'West': LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(5),
+}
 
 # Function to scrape file URLs
 def get_file_urls(catalog_url, day):
@@ -352,9 +363,19 @@ def probability_distribution(ds, var_name1, var_name2, var_bins1, var_bins2):
     """
     Create a 2D histogram of the specified variable and height.
     """
+    is_2d = ds[var_name2].ndim == 2
+    if is_2d != True:
+        # print(f"Create 2D of variable {var_name2}")
+        var2_1d = ds[var_name2].values
+        time_len, var2_len = ds[var_name1].shape
+        var2_2d = np.broadcast_to(var2_1d, (time_len, var2_len))
+        var2 = var2_2d.flatten()
+    else:
+        var2 = ds[var_name2].values.flatten()
+
     # Remove Nans and flatten the data
     var1 = ds[var_name1].values.flatten()
-    var2 = ds[var_name2].values.flatten()
+    
     mask = ~np.isnan(var1)
     var1 = var1[mask]
     var2 = var2[mask]
@@ -981,7 +1002,7 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
     # fig.subplots_adjust(top=0.94)
     fig.subplots_adjust(top=0.91)
 
-def test_and_return_dominant_sf_class(seg, sclass):
+def test_and_return_dominant_sf_class(seg, sclass, threshold):
     # count the occurences of the snowflake class name within the dTime
     aggregate_count = seg.str.count('aggregate').sum()
     graupel_count = seg.str.count('graupel').sum()
@@ -996,15 +1017,15 @@ def test_and_return_dominant_sf_class(seg, sclass):
     largest_number = max(frac_agg, frac_graupel, frac_pris)
 
     # assign dominant snowflake class to dTime if it occurs more than 60% 
-    if largest_number >= 0.6:
+    if largest_number >= threshold:
         if largest_number == frac_agg:
-            sclass.append('aggregate')
+            sclass.append(f'aggregate')
         elif largest_number == frac_graupel:
-            sclass.append('graupel')
+            sclass.append(f'graupel')
         elif largest_number == frac_pris:
-            sclass.append('pristine')
-    if largest_number < 0.6:
-        sclass.append('mixed')
+            sclass.append(f'pristine')
+    if largest_number < threshold:
+        sclass.append(f'mixed')
     return sclass
 
 def model(x, a, b):
@@ -1028,7 +1049,7 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
         raise ValueError("mode must be 'event' or 'fixed'")
     
     # Loop over segments
-    sums, means, sclass, mascdb, counts, zs_counts = [], [], [], [], [], []
+    sums, means, sclass_60, sclass_70, sclass_80, mascdb, counts, zs_counts = [], [], [], [], [], [], [], []
     dt = segment_bounds.to_series().diff().dt.total_seconds()
     for i in range(len(segment_bounds)):
         if i == 0:
@@ -1065,7 +1086,9 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
         
 
         if len(seg_sf) != 0:
-            sclass = test_and_return_dominant_sf_class(seg_sf['snowflake_class_name'], sclass)
+            sclass_60 = test_and_return_dominant_sf_class(seg_sf['snowflake_class_name'], sclass_60, 0.60)
+            sclass_70 = test_and_return_dominant_sf_class(seg_sf['snowflake_class_name'], sclass_70, 0.70)
+            sclass_80 = test_and_return_dominant_sf_class(seg_sf['snowflake_class_name'], sclass_80, 0.80)
             if i== 0:
                 psd = find_psd_in_timestep(seg_sf, delta_h, index=segment_bounds[i])
             else:
@@ -1073,7 +1096,9 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
                 psd = xr.concat([psd, ds_psd], dim="time")
 
         else:
-            sclass.append(np.nan)
+            sclass_60.append(np.nan)
+            sclass_70.append(np.nan)
+            sclass_80.append(np.nan)
             if i== 0:
                 psd = find_psd_in_timestep(seg_sf, delta_h, index=segment_bounds[i])
             else:
@@ -1085,7 +1110,9 @@ def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1
     # Combine into one Dataframe with all values
     df_out = pd.concat([pd.DataFrame(sums).set_index(segment_bounds),
                         pd.DataFrame(means).set_index(segment_bounds),
-                        pd.DataFrame({"snowflake_class_name":sclass}).set_index(segment_bounds), 
+                        pd.DataFrame({"snowflake_class_name_60":sclass_60}).set_index(segment_bounds), 
+                        pd.DataFrame({"snowflake_class_name_70":sclass_70}).set_index(segment_bounds),
+                        pd.DataFrame({"snowflake_class_name_80":sclass_80}).set_index(segment_bounds),
                         pd.DataFrame(mascdb).set_index(segment_bounds),
                         pd.DataFrame(counts).set_index(segment_bounds),
                         pd.DataFrame(zs_counts).set_index(segment_bounds)
@@ -1412,7 +1439,7 @@ def plt_fallspeed_distribution_by_class(df_only_class, binwidth=0.25,stat='perce
 
     # plt.savefig(os.path.join(FIG_DIR, 'fallspeed', 'aggregate_graupel_mixed_pristine_precip_event.png'), format='png', bbox_inches='tight', dpi=300, transparent=True,)
 
-def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze, H_w_prob, H_w, H_ze_w_prob, H_ze_w):
+def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze, H_w_prob, H_w, H_ze_w_prob, H_ze_w, category):
     cmap = cm.managua_r #cm.glasgow_r  # define the colormap
     # extract all colors from the colormap
     cmaplist = [cmap(i) for i in range(cmap.N)]
@@ -1440,10 +1467,15 @@ def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze, H_w_prob, H_w, H_ze_w_prob, H_ze
                 figsize=(15,15), )#sharey=True, 
                 
     axs = np.atleast_2d(axs)    # safe even if n_cols=2
-        
-    for (i,ax), cat in zip(enumerate(axs.flatten()), ['aggregate', 'graupel', 'mixed',
-                                                      'aggregate', 'graupel', 'mixed', 'aggregate', 'graupel', 'mixed']):
-               
+
+    categories = category*3
+    for (i,ax), cat in zip(enumerate(axs.flatten()), categories):
+                threshold = cat.split("_")
+                if len(threshold) > 1:
+                    threshold = threshold[1]
+                    cate = cat.replace(f"_{threshold}", "")
+                else: 
+                    cate = cat
                 if i in [0, 1, 2]:
                     # pcm = ax.pcolormesh(ze_bins, height_bins, H_ze_prob[cat], cmap=cmap, norm=norm_z) 
                     # pcm = ax.pcolormesh(np.arange(-10, 31, 1), np.arange(100, 3100,100), H_ze_prob[cat], cmap=cmap, norm=norm_z) #,levels=bounds_z,
@@ -1455,21 +1487,22 @@ def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze, H_w_prob, H_w, H_ze_w_prob, H_ze
 
                     # title with raw counts
                     total = int(np.nansum(H_ze[cat]))
-                    ax.set_title(f"{cat}\n(counts={total})".title(), fontweight='bold', color=custom_colors[cat])
+                    
+                    ax.set_title(f"{cate}\n(counts={total})".title(), fontweight='bold', color=custom_colors[cate])
                     ax.set_xlabel("Reflectivity [dBz]")
                 elif i in [3, 4, 5]:
                     # pcm2 = ax.pcolormesh(np.arange(-4, 4.1, 0.1), np.arange(100, 3100,100), H_w_prob[cat], cmap=cmap, norm=norm_w) 
                     pcm2 = ax.contourf(np.arange(-4, 4.1, 0.1), np.arange(100, 3100, 100), H_w_prob[cat], levels=bounds_w, cmap=cmap, norm=norm_w, extend="max")
                     ax.vlines(0,0,3000, linestyle='--', color='darkgrey')
                     total = int(np.nansum(H_w[cat]))
-                    ax.set_title(f"\n(counts={total})".title(), fontweight='bold', color=custom_colors[cat])
+                    ax.set_title(f"\n(counts={total})".title(), fontweight='bold', color=custom_colors[cate])
                     ax.set_xlabel("Doppler Velocity [m s$^{{-1}}$]")
 
                 elif i in [6, 7, 8]:
                     # Plot
                     pcm3 = ax.contourf(np.arange(-4, 4.1, 0.1), np.arange(-10, 31, 1), H_ze_w_prob[cat], levels=bounds_z_w, cmap=cmap, norm=norm_z_w, extend="max")
                     total = int(np.nansum(H_ze_w[cat]))
-                    ax.set_title(f"\n(counts={total})".title(), fontweight='bold', color=custom_colors[cat])
+                    ax.set_title(f"\n(counts={total})".title(), fontweight='bold', color=custom_colors[cate])
                     ax.vlines(0,-10,30, linestyle='--', color='darkgrey')
                     ax.set_ylabel("Reflectivity [dBz]")
                     ax.set_xlabel("Doppler Velocity [m s$^{{-1}}$]")
@@ -1521,6 +1554,143 @@ def plt_prob_agg_graupel_mixed(H_ze_prob, H_ze, H_w_prob, H_w, H_ze_w_prob, H_ze
     offset.set_horizontalalignment('center')
     offset.set_x(0.5)
 
+def plt_prob_agg_graupel_Ze_W(H_ze_prob, H_ze, H_w_prob, H_w, category):
+    cmap = cm.managua_r #cm.glasgow_r  # define the colormap
+    # extract all colors from the colormap
+    cmaplist = [cmap(i) for i in range(cmap.N)]
+    # force the first color entry to be white
+    cmaplist[0] = (255,255,255, 0.9)
+    # create the new map
+    cmap = LinearSegmentedColormap.from_list(
+    'Custom cmap', cmaplist, 40) # cmap.N
+    bounds_z = np.arange(0., 0.004, 0.0001)
+    norm_z = BoundaryNorm(bounds_z, cmap.N)
+
+    bounds_w = bounds_z
+    norm_w = BoundaryNorm(bounds_w, cmap.N)
+
+
+    fig, axs = plt.subplots(
+                nrows=2, ncols=2,
+                figsize=(15,15), )#sharey=True, 
+                
+    axs = np.atleast_2d(axs)    # safe even if n_cols=2
+
+    categories = category*3
+    for (i,ax), cat in zip(enumerate(axs.flatten()), categories):
+                threshold = cat.split("_")
+                if len(threshold) > 1:
+                    threshold = threshold[1]
+                    cate = cat.replace(f"_{threshold}", "")
+                else: 
+                    cate = cat
+                if i in [0, 1]:
+                    pcm = ax.contourf(np.arange(-10, 31, 1), np.arange(100, 3100,100), H_ze_prob[cat], 
+                                      levels=bounds_z, 
+                                      cmap=cmap, norm=norm_z, extend="max")
+                    
+
+
+                    # title with raw counts
+                    total = int(np.nansum(H_ze[cat]))
+                    
+                    ax.set_title(f"{cate}\n(counts={total})".title(), fontweight='bold', color=custom_colors[cate])
+                    ax.set_xlabel("Reflectivity [dBZ]")
+                elif i in [2, 3]:
+                    pcm2 = ax.contourf(np.arange(-4, 4.1, 0.1), np.arange(100, 3100, 100), H_w_prob[cat], levels=bounds_w, cmap=cmap, norm=norm_w, extend="max")
+                    ax.vlines(0,0,3000, linestyle='--', color='darkgrey')
+                    total = int(np.nansum(H_w[cat]))
+                    ax.set_title(f"\n(counts={total})".title(), fontweight='bold', color=custom_colors[cate])
+                    ax.set_xlabel("Doppler Velocity [m s$^{{-1}}$]")
+
+            
+
+                ax.grid(True, ls=':')
+                ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
+                if i in [0, 2]:
+                    ax.set_ylim([0, 3000])
+                    ax.set_ylabel("Height [m]")
+                
+
+
+    plt.tight_layout(rect=[0, 0, 0.9, 1])   # leave room for cbars
+
+    cax = fig.add_axes([0.89, 0.58 , 0.015, 0.34]) # left, bottom, width, height
+    cbar = fig.colorbar(pcm, ticks=bounds_z[::4], cax=cax, orientation='vertical', label='Probability', extend='max', spacing="proportional")
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_powerlimits((-2, 2))
+    formatter.set_scientific(True)
+    cbar.formatter = formatter
+    cbar.update_ticks()
+    # move the exponent text to be centered above bar
+    offset = cbar.ax.yaxis.get_offset_text()
+    offset.set_horizontalalignment('center')
+    offset.set_x(0.5)
+
+    cax = fig.add_axes([0.89, 0.08 , 0.015, 0.34]) # left, bottom, width, height
+    cbar2 = fig.colorbar(pcm2, ticks=bounds_w[::4], cax=cax, orientation='vertical', label='Probability', extend='max', spacing="proportional")
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_powerlimits((-2, 2))
+    formatter.set_scientific(True)
+    cbar2.formatter = formatter
+    cbar2.update_ticks()
+    # move the exponent text to be centered above bar
+    offset = cbar2.ax.yaxis.get_offset_text()
+    offset.set_horizontalalignment('center')
+    offset.set_x(0.5)
+
+    
+
+def plt_CFAD_agg_graupel_mixed_all(H_ze_prob, H_ze, x_range, category, xlabel):
+    cmap = cm.managua_r #cm.glasgow_r  # define the colormap
+    # extract all colors from the colormap
+    cmaplist = [cmap(i) for i in range(cmap.N)]
+    # force the first color entry to be white
+    cmaplist[0] = (255,255,255, 0.9)
+    # create the new map
+    cmap = LinearSegmentedColormap.from_list(
+    'Custom cmap', cmaplist, 40) # cmap.N
+    # define the bins and normalize
+    bounds_z = np.arange(0., 0.004, 0.0001)
+    norm_z = BoundaryNorm(bounds_z, cmap.N)
+    
+
+    fig, axs = plt.subplots(
+                nrows=2, ncols=2,
+                figsize=(15,15), sharex=True, sharey=True, constrained_layout=True)
+    axs = np.atleast_2d(axs)
+    for (i, ax), cat in zip(enumerate(axs.flatten()), category):
+        threshold = cat.split("_")
+        if len(threshold) > 1:
+            threshold = threshold[1]
+            cate = cat.replace(f"_{threshold}", "")
+        else:
+            cate = cat
+        pcm = ax.contourf(x_range, np.arange(100, 3100, 100), H_ze_prob[cat], levels=bounds_z, cmap=cmap, norm=norm_z, extend="max") 
+        # title with raw counts
+        total = int(np.nansum(H_ze[cat]))
+        ax.set_title(f"{cate}\n(counts={total})".title(), fontweight='bold', color=custom_colors[cate])
+        ax.set_xlabel(xlabel)
+
+        ax.grid(True, ls=':')
+        ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
+        if i in [0, 3]:
+            ax.set_ylim([0, 3000])
+            ax.set_ylabel("Height [m]")
+    cax = fig.add_axes([1.01, 0.05 , 0.015, .9]) # left, bottom, width, height
+    cbar = fig.colorbar(pcm, ticks=bounds_z[::4], cax=cax, orientation='vertical', label='Probability', extend='max', spacing="proportional")
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_powerlimits((-2, 2))
+    formatter.set_scientific(True)
+    cbar.formatter = formatter
+    cbar.update_ticks()
+
+    # move the exponent text to be centered above bar
+    offset = cbar.ax.yaxis.get_offset_text()
+    offset.set_horizontalalignment('center')
+    offset.set_x(0.5)
+
+
 def plt_precip_scatter_literature(df, title=" "):
     cmap = cm.managua  # define the colormap
     # extract all colors from the colormap
@@ -1528,36 +1698,40 @@ def plt_precip_scatter_literature(df, title=" "):
     # create the new map
     custom_cmap = LinearSegmentedColormap.from_list(
     'Custom cmap', cmaplist, 7) # cmap.N
-    equations = {"Matrosov_a": ['Aggregate', "(2007)", custom_cmap(1)],#["Z = 56 S$^{1.2}$", ], 
-             "Bracci_a": ['Aggregate', "et al. (2022)", custom_cmap(0)],#["Z = 134 S$^{1.25}$", ],
+    equations = {"Matrosov_a": ['Aggregate', "(2007)", "#C51B7D", 56, 1.2],#["Z = 56 S$^{1.2}$", ], 
+             "Bracci_a": ['Aggregate', "et al. (2022)", "#F768A1", 134, 1.25],#["Z = 134 S$^{1.25}$", ],
             #  "Nakai_a": ['Aggregate', "et al. (2022)", custom_cmap(2)],#["Z = 107.4 S$^{1.67}$"],
             #  "Nakai_g": ['Graupel', "et al. (2022)", custom_cmap(4)], # ["Z = 227.4 S$^{1.67}$", ],
-             "Pu_g" : ['Graupel', "et al. (2020)", custom_cmap(5)], #["Z = 252 S$^{2.03}$", ]
-             
+             "Pu_g" : ['Graupel', "et al. (2020)", "#FDB863", 252, 2.03], #["Z = 252 S$^{2.03}$", ]
+             "Schoger": ['All', "et al. (2021)", "#00BFC4", 77.61, 1.22]
              }
 
-    fig, axsm = plt.subplots(2, 3, figsize=(15, 10, ), sharex=True, sharey=True)
+    fig, axsm = plt.subplots(2, 2, figsize=(10, 10, ), sharex=True, sharey=True, constrained_layout=True)
     axs = axsm.flatten()
 
     for (i,ax), (name, eq) in zip(enumerate(axs), equations.items()):
-        if i == 0 or i==1 or i==2:
+        if i == 0 or i==1:
             # color = custom_colors['aggregate'] 
             xval = df['aggregate']['rate_mm_h']
             yval = df['aggregate'][f'{name}_400_mm_h']
-            ylabel = "S$_{aggregate}$ [mm h$^{-1}$]"
-        else:
-            # color = custom_colors['graupel'] 
+            # ylabel = "SWE$_{aggregate}$ [mm h$^{-1}$]"
+        elif i ==2:
             xval = df['graupel']['rate_mm_h']
             yval = df['graupel'][f'{name}_400_mm_h']
-            ylabel = "S$_{graupel}$ [mm h$^{-1}$]"
+            # ylabel = "SWE$_{graupel}$ [mm h$^{-1}$]"
+        else:
+            # color = custom_colors['graupel'] 
+            xval = df['campaign']['rate_mm_h']
+            yval = df['campaign'][f'{name}_400_mm_h']
+            # ylabel = "SWE$_{all}$ [mm h$^{-1}$]"
         ax.scatter(xval, yval, color=eq[2], alpha=0.7,  edgecolor=eq[2])
 
 
-        ax.set(xlabel = "Geonor [mm h$^{-1}$]", ylabel=ylabel, xlim=[0.009, 40], ylim=[0.009,40])
-        ax.grid(True, ls=':')
+        ax.set(xlim=[0.009, 40], ylim=[0.009,40])
+        ax.grid(True, ls=':', which='both')
         ax.set_title(f"{name.split('_')[0]} {eq[1]}: {eq[0]}", color=eq[2], fontweight='bold', )
 
-        ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
+        ax.text(0.05, 0.95, fig_label[i], fontweight='bold', horizontalalignment='center',verticalalignment='center', transform = ax.transAxes, color='black')
         ax.set_xscale('log')
         ax.set_yscale('log')
 
@@ -1565,13 +1739,41 @@ def plt_precip_scatter_literature(df, title=" "):
         x = np.linspace(0, 40, 100)
         y = x
         ax.plot(x, y, linestyle='--', color='darkgrey')
+        
+        # annotation box
+        text_box = ax.text(0.12, 0.98, "", transform=ax.transAxes, va='top', ha='left', fontsize=11, bbox=dict(boxstyle="round", fc="white", ec="0.5", alpha=0.9))
 
-    
+        mask = ((xval > 0) & (yval > 0) & np.isfinite(xval) & np.isfinite(yval))
+        xval = xval[mask]
+        yval = yval[mask]
+
+        # Transform the data to logarithmic scales
+        log_x = np.log10(xval)
+        log_y = np.log10(yval)
+
+        # compute error to the 1:1 line
+        err = log_y - log_x
+        rmse = np.sqrt(np.nanmean(err**2))
+
+        # update annotation
+        text_box.set_text(
+                f"a = {eq[3]}\n"
+                f"b = {eq[4]:.2f}\n"
+                f"RMSE = {rmse:.4f}"
+            )
+
+    for i in range(2):
+        axsm[i, 0].set_ylabel("SWE$_{retrieved}$ [mm h$^{-1}$]")
+        axsm[1, i].set_xlabel("SWE$_{obs}$ [mm h$^{-1}$]")
     # axs[-2].text(2.05, 0.95, "\n Bracci et al. (2022) \n Matrosov (2007) \n Nakai et al. (2022) \n Pu et al. (2020)", fontweight ='bold', horizontalalignment='left',verticalalignment='center', transform = axs[-2].transAxes)
-    axs[-1].set_visible(False)
+    # axs[-1].set_visible(False)
+    # plt.rcParams['axes.labelcolor'] = 'white'
+    # plt.rcParams['xtick.color'] = 'white'
+    # plt.rcParams['ytick.color'] = 'white'
+    # plt.rcParams['axes.edgecolor'] = 'white' # If using dark background
 
     fig.suptitle(f"{title}", fontweight ="bold",y=0.96)  
-    plt.tight_layout(rect=[0,0,1,1])
+    # plt.tight_layout(rect=[0,0,1,1])
 
 # Local slope (exponent b(D)) from quadratic fit
 def local_exponent(D, coeffs):
@@ -1944,7 +2146,7 @@ def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset, min_rate=0.1, a=56
         # zs_count.append(zs_cc)
 
 
-    df_offset = pd.concat([df[['shifted_time_end', 'Geonor', 'air_temperature', 'wind_direction', 'wind_speed', 'snowflake_class_name', 'fallspeed', 'flake_Dmax', 'gan3d_mass' ,'delta_h', 'rate_mm_h', 'count_fallspeed', 'count_flake_Dmax', 'count_gan3d_mass', 'count_precip']],
+    df_offset = pd.concat([df[['shifted_time_end', 'Geonor', 'air_temperature', 'wind_direction', 'wind_speed', 'snowflake_class_name_60', 'snowflake_class_name_70', 'snowflake_class_name_80', 'fallspeed', 'flake_Dmax', 'gan3d_mass' ,'delta_h', 'rate_mm_h', 'count_fallspeed', 'count_flake_Dmax', 'count_gan3d_mass', 'count_precip']],
                         #    pd.DataFrame(zs_count).set_index(df.index[:]),
                                     pd.DataFrame(sums).set_index(df.index[:]), 
                                     pd.DataFrame(means).set_index(df.index[:]), ], axis=1)# df['shifted_time_end'][1:].reset_index(drop=True)], axis=1)
@@ -1980,3 +2182,328 @@ def sse_intercept(loga, b, logS, logZ, w):
     # weighted_sse = np.sum(w * residuals**2)
     weighted_sse = np.sum(residuals**2)
     return weighted_sse # weighted residuals
+
+
+def edges_from_centers(centers):
+    centers = np.asarray(centers)
+    d = np.diff(centers)
+    edges = np.empty(len(centers) + 1)
+    edges[1:-1] = centers[:-1] + d / 2
+    edges[0] = centers[0] - d[0] / 2
+    edges[-1] = centers[-1] + d[-1] / 2
+    return edges
+
+def find_bin(val, edges):
+    return np.searchsorted(edges, val) -1 
+
+def draw_lit_box(ax, box, a_edges, b_edges, lw=2.5):
+    ia = find_bin(box["a"], a_edges)
+    ib = find_bin(box["b"], b_edges)
+
+    x0 = b_edges[ib]
+    y0 = a_edges[ia]
+    width  = b_edges[ib + 1] - b_edges[ib]
+    height = a_edges[ia + 1] - a_edges[ia]
+
+    ax.add_patch(Rectangle(
+        (x0, y0),
+        width,
+        height,
+        fill=False,
+        edgecolor=box["color"],
+        linewidth=lw,
+        zorder=11
+    ))
+
+def draw_lit_box_index(ax, box, a_vals, b_vals):
+    a = box["a"]
+    b = box["b"]
+
+    # find nearest indices
+    iy = np.argmin(np.abs(a_vals - a))
+    ix = np.argmin(np.abs(b_vals - b))
+
+    ax.add_patch(Rectangle(
+        (ix, iy), 1, 1,
+        fill=False,
+        edgecolor=box["color"],
+        linewidth=2.5,
+        zorder=11
+    ))
+
+LITERATURE_BOXES = {
+    "A": dict(a=56, b=1.20, 
+              color="#C51B7D", #"lime",    
+              label="Matrosov (2007)"),
+    "B": dict(a=134,   b=1.25, 
+              color="#F768A1",#"yellow",  
+              label="Bracci et al. (2022)"),
+    "C": dict(a=252,   b=2.03, 
+              color="#FDB863",#"magenta", 
+              label="Pu et al. (2020)"),
+    "D": dict(a=77.61, b=1.22, 
+              color="#00BFC4",#"cyan",    
+              label="Schoger et al. (2021)"),
+}
+
+LIT_PLACEMENT = {
+    # Physical categories
+    ("aggregate", "graupel", "mixed", "campaign"): {
+        "aggregate": ["A", "B"],
+        "graupel":   ["C"],
+        "campaign":  ["D"],
+    },
+    ("campaign"): {
+        "campaign":  ["D"],
+    },
+    # Wind-direction categories
+    ("North", "East", "South", "West"): {
+        "North": ["A", "B", "C", "D"],
+        "East":  ["A", "B", "C", "D"],
+        "South": ["A", "B", "C", "D"],
+        "West":  ["A", "B", "C", "D"],
+    },
+}
+
+def get_lit_placement(category):
+    key = tuple(category)
+    if key not in LIT_PLACEMENT:
+        raise ValueError(f"No literature placement defined for category={category}")
+    return LIT_PLACEMENT[key]
+
+
+def plt_chessboard(df, counts, cbar_label, category, vmin = 0,vmax=1):
+    cmap = cm.managua  # define the colormap
+    # extract all colors from the colormap
+    cmaplist = [cmap(i) for i in range(cmap.N)]
+    # create the new map
+    custom_cmap = LinearSegmentedColormap.from_list(
+    'Custom cmap', cmaplist, 14)
+
+    custom_colors = {  
+                     category[0]: LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(1),  
+                     category[1]:LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(4),   
+                     category[2]: LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(2),
+                     category[3]: LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(5),
+}
+    
+    
+    wanted_yvals = [2, 4, 6, 8, 10, 50, 100, 150, 200, 250, 300]
+    fig, axs = plt.subplots(nrows=2, ncols=2, figsize=(12,12), sharex=True, sharey=True, constrained_layout=True)
+    axs = np.atleast_2d(axs)
+    for (i, ax), class_key in zip(enumerate(axs.flatten()), category):
+        a_vals = df[class_key].index.values
+        b_vals = df[class_key].columns.values
+
+        # a_edges = edges_from_centers(a_vals)
+        # b_edges = edges_from_centers(b_vals)
+        x_edges = np.arange(len(b_vals) +1)
+        y_edges = np.arange(len(a_vals) +1)
+
+        # A, B = np.meshgrid(df[class_key].columns, df[class_key].index)
+        # A, B = np.meshgrid(np.arange(len(b_vals)), 
+        #                    np.arange(len(a_vals)))
+        c = ax.pcolormesh(x_edges, y_edges, df[class_key].values, vmin=vmin, vmax=vmax, 
+                      cmap=custom_cmap,shading="auto", edgecolors=(0, 0, 0, 0.2), linewidth=0.005, alpha=0.9)
+        
+        # hightlight the cell with minimum RMSE/MAE
+        # index of min
+        # iy, ix = df[class_key].stack().idxmin()
+        iy, ix= np.unravel_index(np.nanargmin(abs(df[class_key].values)), df[class_key].shape)
+        # rectangle edges
+        ax.add_patch(Rectangle((ix, iy), 1, 1, # index space
+                     fill=False, edgecolor="black", linewidth=3.5, zorder=9))
+        
+        ax.add_patch(Rectangle((ix,iy), 1, 1,
+                     fill=False, edgecolor="white", linewidth=2.5, zorder=10))
+
+        # # Highlight literature boxes
+        a_to_idx = {a:i for i,a in enumerate(a_vals)}
+        b_to_idx = {b:i for i,b in enumerate(b_vals)}
+        placement = get_lit_placement(category)
+        for study_key in placement.get(class_key, []):
+            box = LITERATURE_BOXES[study_key]
+            draw_lit_box_index(ax, box, a_vals, b_vals)
+
+  
+
+
+        # Ticks & labels
+        ax.set_title(f"{class_key} (counts={counts[class_key]})".title(), fontweight='bold', color=custom_colors[class_key])
+        ax.text(0.05, 1.025, fig_label[i], fontweight="bold", horizontalalignment="center", verticalalignment='center', transform = ax.transAxes,color="black")
+
+        x_idx = np.arange(2, len(b_vals), 5)
+        ax.set_xticks(x_idx)
+        ax.set_xticklabels(b_vals[x_idx])
+        # a_vals is non-uniform, select by value, map to index
+        y_idx = [i for i, a in enumerate(a_vals) if a in wanted_yvals]
+        ax.set_yticks(y_idx)
+        ax.set_yticklabels(a_vals[y_idx])
+
+        split_idx = np.where(a_vals == 10)[0][0]
+        ax.axhline(split_idx, color='white', lw=2)
+
+    for i in range(2):
+        axs[i, 0].set_ylabel(r"$a$", fontsize=20, )#color='white')
+        axs[1, i].set_xlabel(r"$b$", fontsize=20, )#color='white')
+    
+    lit_handles = [
+    Patch(facecolor="none",
+          edgecolor=box["color"],
+          linewidth=2.5,
+          label=box["label"])
+    for box in LITERATURE_BOXES.values()
+]
+
+
+    fig.legend(
+    handles=lit_handles,
+    loc='upper left',
+    bbox_to_anchor=(0.88, 0.28),  # tweak this
+    frameon=True,
+    title=r"Literature ($a$, $b$)"
+)
+
+    
+
+    plt.tight_layout(rect=[0, 0, 0.9, 1])   # leave room for cbars
+    cax = fig.add_axes([0.9, 0.3 , 0.015, 0.45]) # left, bottom, width, height
+    cb = fig.colorbar(c, cax=cax, orientation='vertical', label=cbar_label,spacing="proportional", extend="both")
+
+def extract_best_ab(df_metrics):
+    """
+    Extract best (a,b) per [metric_key][class_key] from stacked DataFrames.
+    Returns: dict[metric_key][class_key] = (a, b)
+    """
+    result = {}
+    for metric_key, class_dict in df_metrics.items():
+        result[metric_key] = {}
+        for thresh in class_dict.keys():
+            result[metric_key][thresh] = {}
+            for class_key, df in class_dict[thresh].items():
+                if df.empty:
+                    continue
+                df = df.abs()
+                stacked = df.stack()
+
+                if stacked.empty or stacked.isna().all():
+                    continue
+                result[metric_key][thresh][class_key] = stacked.idxmin()
+
+    return result
+
+
+def build_pp(cfg, source_dict, delta_h, thresh, time_index):
+
+    aligned = []
+    for cls, (a, b) in cfg.items():
+        key = f"S_{a}_{b}_400_mm_h"
+        s = source_dict[thresh][cls][key]
+
+        # KEEP NaNs here
+        s = s.reindex(time_index)
+
+        aligned.append(s)
+
+    # combine WITHOUT forcing zeros
+    pp = pd.concat(aligned, axis=1).sum(axis=1, min_count=1)
+
+    return pp * delta_h.reindex(time_index)
+
+def plt_cum(ax, series, time_index, label, color, ls, lw, alpha=None):
+    s = series.reindex(time_index)
+    s = s.fillna(0)   # correct for rates / increments
+    cum = s.cumsum()
+    cum = cum - cum.iloc[0]   # normalize start to 0
+    # ax.plot(cum, label=label, color=color, linestyle=ls, linewidth=lw, alpha=alpha)
+    ax.step(cum.index, cum, where='post', label=label, color=color, linestyle=ls, linewidth=lw, alpha=alpha)
+
+def plot_literature_lines(ax, class_key, category_set, x_line):
+    """
+    ax           : matplotlib axis
+    class_key    : current subplot category (e.g. 'aggregate', 'North')
+    category_set : tuple used in LIT_PLACEMENT keys
+    x_line       : x grid (logspace)
+    """
+
+    if category_set not in LIT_PLACEMENT:
+        return
+
+    placement = LIT_PLACEMENT[category_set]
+
+    if class_key not in placement:
+        return
+
+    for lit_id in placement[class_key]:
+        lit = LITERATURE_BOXES[lit_id]
+
+        a = lit["a"]
+        b = lit["b"]
+        color = lit["color"]
+        label = lit["label"]
+
+        y = a * x_line**b
+
+        ax.plot(
+            x_line, y,
+            color=color,
+            linestyle="--",
+            linewidth=1.6,
+            alpha=0.9,
+            label=label
+        )
+
+def plt_scatter_SWEobs_SWEret_4x4(rmse_ab, df_rmse, df, category):
+    custom_colors = {  
+                     category[0]: LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(1),  
+                     category[1]:LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(4),   
+                     category[2]: LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(2),
+                     category[3]: LinearSegmentedColormap.from_list('Custom cmap', cmaplist, 7)(5),
+}
+
+    fig, axs = plt.subplots(2,2, figsize=(10,10), sharex=True, sharey=True, constrained_layout=True)
+
+    for (i, ax), class_key in zip(enumerate(axs.flatten()), category):
+        a, b = rmse_ab[class_key]
+
+        rmse_val = df_rmse[class_key].loc[a, b]
+        x_obs = df[class_key]['rate_mm_h']
+        y_ret = df[class_key][f"S_{a}_{b}_400_mm_h"]
+        sc = ax.scatter(x_obs, y_ret, color=custom_colors[class_key], alpha=0.7, edgecolors=custom_colors[class_key])
+
+
+        
+        # plot 1:1 line
+        x_line = np.linspace(0.01, 40, 100)
+        ax.plot(x_line, x_line, linestyle='--', color='darkgrey', lw=1)
+
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.grid(True, ls=':', which='both')
+
+
+        # fixed limits (important for visiual stability)
+        ax.set_xlim(0.009, 40)
+        ax.set_ylim(0.009, 40)
+        
+        ax.text(0.05, 0.95, fig_label[i], fontweight="bold", horizontalalignment='center',verticalalignment='center', transform = ax.transAxes)
+
+        title = ax.set_title("", fontweight='bold', color=custom_colors[class_key])
+        class_key = class_key.replace("_", " ").title()
+        title.set_text(f"{class_key} — a = {a},  b = {b}")
+
+        # dynamic annotation box
+        text_box = ax.text(0.12, 0.98, "", 
+                transform=ax.transAxes, va='top', ha='left', fontsize=11, bbox=dict(boxstyle="round", fc="white", ec="0.5", alpha=0.9))
+
+        
+        # update annotation
+        text_box.set_text(
+                f"a = {a}\n"
+                f"b = {b:.2f}\n"
+                f"RMSE = {rmse_val:.4f}"
+            )
+
+    for i in range(2):
+        axs[i, 0].set_ylabel("SWE$_{retrieved}$ [mm h$^{-1}$]", )#fontsize=20)
+        axs[1, i].set_xlabel("SWE$_{obs}$ [mm h$^{-1}$]",)# fontsize=20)

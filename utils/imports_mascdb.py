@@ -16,3 +16,7 @@ from collections import OrderedDict
 import time
 from datetime import datetime
 from seaborn import set_context
+from matplotlib.dates import DateFormatter, date2num
+from matplotlib.gridspec import GridSpec
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch

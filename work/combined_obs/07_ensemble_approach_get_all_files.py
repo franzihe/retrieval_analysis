@@ -477,19 +477,19 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
         print(f"Written {out_file}")
 
 
-    # ------------------------------------------------------------------
-    # 7. Nearest-crystal variant (optional but faithful)
-    # ------------------------------------------------------------------
-    ds_final_nearest = run_nearest_crystal_variant(df_sum, df_mean, sf_class)
-    out_file = os.path.join(nc_dir, f"Z_S_2Tm_WD_WS_nearest_class_precip_event_dt_offset_{site}_{year}.nc")
-    if len(ds_final_nearest.time) > 0:
-        write_final(ds_final, out_file)
-        print(f"Written {out_file}")
+    # # ------------------------------------------------------------------
+    # # 7. Nearest-crystal variant (optional but faithful)
+    # # ------------------------------------------------------------------
+    # ds_final_nearest = run_nearest_crystal_variant(df_sum, df_mean, sf_class)
+    # out_file = os.path.join(nc_dir, f"Z_S_2Tm_WD_WS_nearest_class_precip_event_dt_offset_{site}_{year}.nc")
+    # if len(ds_final_nearest.time) > 0:
+    #     write_final(ds_final, out_file)
+    #     print(f"Written {out_file}")
 
-    # ------------------------------------------------------------------
+    # # ------------------------------------------------------------------
     # 10. Cleanup (IMPORTANT)
     # ------------------------------------------------------------------
-    del df_sum, df_mean, df_sum_offset, df_mean_offset, sf_class, ds_final, ds_final_nearest
+    del df_sum, df_mean, df_sum_offset, df_mean_offset, sf_class, ds_final, #ds_final_nearest
     gc.collect()
 
 
@@ -497,8 +497,9 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
 
 
 if __name__ == "__main__":
-    a_range = np.arange(10, 330, 10)
-    b_range = np.arange(0.8, 5.1, 0.1)
+    # a_range = np.concatenate([np.arange(1,10,1), np.arange(10,330,10)])
+    a_range = np.arange(300,330,10)
+    b_range = np.arange(5, 6.1, 0.1)#np.arange(0.8,6.1,0.1)
 
 
     for a in a_range:
@@ -507,7 +508,7 @@ if __name__ == "__main__":
             a = int(a)
             b = round(b, 2)
             
-            out_name = f'{OUTPUT_DATA_DIR}/ANX_obs_EM_{a}_{b}/Z_S_2Tm_WD_WS_class_precip_event_dt_offset_{site}_{year}.nc'
+            out_name = f'{OUTPUT_DATA_DIR}/ANX_obs_EM_{a}_{b}/Z_S_2Tm_WD_WS_class_threshold_precip_event_dt_offset_{site}_{year}.nc'
             if out_name not in glob(out_name):
                 print(f"\n🔹 Running ensemble member a={a}, b={b}")
                 process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, version)
