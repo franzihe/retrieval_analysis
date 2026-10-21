@@ -652,12 +652,12 @@ def plt_case_figure(ds_case, df_case, precip, da_zoomed, day_start, day_end, cas
                                   norm=norm, 
                                   cbar_bounds=bounds[::2], cbar_label="Reflectivity [dBZ]")
     
-    ax_ref.hlines(4., time_vals[0], time_vals[-1], colors='k', linestyles=':', alpha=0.85, label='$400\,m$')
+    # ax_ref.hlines(4., time_vals[0], time_vals[-1], colors='k', linestyles=':', alpha=0.85, label='$400\,m$')
 
     ax_ref.set_title(f"{case_name}: {day_start:%Y-%m-%d}", fontweight="bold", color=case_color)
 
     ax_ref.set_ylabel("Height [m]")
-    ax_ref.legend(loc='upper center')
+    # ax_ref.legend(loc='upper center')
 
     ax_ref.set_ylim(0, range_vals.max())
     ax_ref.set_yticks(np.arange(0,35, 5))

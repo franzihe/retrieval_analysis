@@ -1003,11 +1003,24 @@ def plt_Ze_W_p_T_U(ds, day_start, xmax, site):
     fig.subplots_adjust(top=0.91)
 
 def test_and_return_dominant_sf_class(seg, sclass, threshold):
+    # convert percentage to fraction
+    threshold = threshold/100
+
+    # remove missing snowflake classifications
+    valid_classes = seg.dropna()
+
+    # handle segments without valid classifications
+    if valid_classes.empty:
+        sclass.append(np.nan)
+        return sclass
+
+
     # count the occurences of the snowflake class name within the dTime
-    aggregate_count = seg.str.count('aggregate').sum()
-    graupel_count = seg.str.count('graupel').sum()
-    pristine_count = seg.str.count('pristine').sum()
-    total_count = len(seg)
+    aggregate_count = valid_classes.eq("aggregate").sum()
+    graupel_count = valid_classes.eq("graupel").sum()
+    pristine_count = valid_classes.eq("pristine").sum()
+
+    total_count = len(valid_classes)
 
     # calculate the fraction of this number to find which snowflake class dominates within dTime
     frac_agg = aggregate_count/total_count
@@ -1024,7 +1037,7 @@ def test_and_return_dominant_sf_class(seg, sclass, threshold):
             sclass.append(f'graupel')
         elif largest_number == frac_pris:
             sclass.append(f'pristine')
-    if largest_number < threshold:
+    else:
         sclass.append(f'mixed')
     return sclass
 
@@ -1033,124 +1046,404 @@ def model(x, a, b):
     # return (x/a)**(1/b)
     
 
-def process_precip_segments(df_sum, df_mean, sf_class, mode="event", duration="1H", min_rate=0.1, altitudes=[400, 800, 1000], a=56, b=1.2):
-    if mode == "event":
-        notna_idx = df_sum['precipitation'].dropna().index
-        notna_idx = notna_idx.append(pd.Index([df_sum.index[-1]]))
-        segment_bounds = notna_idx
 
-    elif mode == "fixed":
-        step = pd.to_timedelta(duration)
-        step = int(step/pd.Timedelta(seconds=60))
-        dt_idx = df_sum.index[step::step] # step in minutes
-        dt_idx = dt_idx.append(pd.Index([df_sum.index[-1] + pd.Timedelta(minutes=1)]))
-        segment_bounds = dt_idx
-    else:
+def process_precip_segments(
+    df_sum,
+    df_mean,
+    sf_class,
+    mode="fixed",
+    duration="4min",
+    min_rate=0.1,
+    altitudes=[400, 800, 1000],
+    a=56,
+    b=1.2,
+    threshold=60
+):
+    """
+    Aggregate precipitation observations into events or fixed windows.
+
+    Fixed mode:
+        - Non-overlapping [start, end) windows
+        - Window end is the output timestamp
+        - Duration is exactly the requested window length
+        - Missing MASC observations give NaN classification
+        - No MASC fallspeed requirement
+
+    Event mode:
+        - Retains the original precipitation-based boundaries
+        - Retains the original MASC fallspeed requirement
+
+    Returns
+    -------
+    df_out : pandas.DataFrame
+        Aggregated precipitation and snowflake-class data.
+    psd : xarray.Dataset or xarray.DataArray
+        PSD data aligned with df_out.
+    """
+
+    if mode not in ("event", "fixed"):
         raise ValueError("mode must be 'event' or 'fixed'")
-    
-    # Loop over segments
-    sums, means, sclass_60, sclass_70, sclass_80, mascdb, counts, zs_counts = [], [], [], [], [], [], [], []
-    dt = segment_bounds.to_series().diff().dt.total_seconds()
-    for i in range(len(segment_bounds)):
-        if i == 0:
-            seg = df_sum.loc[:segment_bounds[0]].copy()
-            seg_m = df_mean.loc[:segment_bounds[0]].copy()
-            seg_sf = sf_class.loc[:segment_bounds[0]].copy()
-            delta_h = dt.loc[:segment_bounds[0]]
+
+    if df_sum.empty:
+        raise ValueError("df_sum is empty")
+
+    # --------------------------------------------------
+    # 1. Define segment boundaries
+    # --------------------------------------------------
+
+    if mode == "event":
+
+        notna_idx = df_sum["precipitation"].dropna().index
+        segment_bounds = notna_idx.append(
+            pd.Index([df_sum.index[-1]])
+        ).unique().sort_values()
+
+        if len(segment_bounds) == 0:
+            raise ValueError("No event boundaries found")
+
+        # Preserve the original event selection logic
+        event_dt = (
+            segment_bounds.to_series()
+            .diff()
+            .dt.total_seconds()
+        )
+
+    else:
+
+        step = pd.Timedelta(duration)
+
+        if step <= pd.Timedelta(0):
+            raise ValueError("duration must be positive")
+
+        # Anchor windows to midnight.
+        # Example: 00:00-00:04, 00:04-00:08, ...
+        first_start = df_sum.index.min().floor("D")
+
+        # Assume 1-minute input timestamps represent
+        # the beginning of each measurement interval.
+        data_end = (
+            df_sum.index.max()
+            + pd.Timedelta(minutes=1)
+        )
+
+        window_starts = pd.date_range(
+            start=first_start,
+            end=data_end,
+            freq=step,
+            inclusive="left",
+        )
+
+        window_ends = window_starts + step
+
+        # Exclude an incomplete final window
+        complete = window_ends <= data_end
+        window_starts = window_starts[complete]
+        window_ends = window_ends[complete]
+
+        segment_bounds = window_ends
+
+    # --------------------------------------------------
+    # 2. Process each segment
+    # --------------------------------------------------
+
+    sums = []
+    means = []
+    mascdb = []
+    counts = []
+    zs_counts = []
+
+    sclass_60 = []
+    # sclass_70 = []
+    # sclass_80 = []
+
+    psd_list = []
+    segment_durations = []
+    segment_starts = []
+
+    for i, end_time in enumerate(segment_bounds):
+
+        # ----------------------------------------------
+        # Select observations
+        # ----------------------------------------------
+
+        if mode == "fixed":
+
+            start_time = window_starts[i]
+
+            # Start inclusive, end exclusive
+            seg = df_sum.loc[
+                (df_sum.index >= start_time)
+                & (df_sum.index < end_time)
+            ].copy()
+
+            seg_m = df_mean.loc[
+                (df_mean.index >= start_time)
+                & (df_mean.index < end_time)
+            ].copy()
+
+            seg_sf = sf_class.loc[
+                (sf_class.index >= start_time)
+                & (sf_class.index < end_time)
+            ].copy()
+
+            delta_seconds = step.total_seconds()
 
         else:
-            seg = df_sum.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]].copy()
-            seg_m = df_mean.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]].copy()
-            seg_sf = sf_class.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]].copy()
-            delta_h = dt.loc[segment_bounds[i-1] + pd.Timedelta(seconds=1) : segment_bounds[i]].copy()
 
-        # filter: remove warm segments (>2 °C)
-        all_T = seg_m['air_temperature'].dropna()
-        if (len(all_T) != 0) and (sum(all_T > 2.) >=1):
-            seg.loc[:,:] = np.nan
-            seg_m.loc[:,:] = np.nan
-            seg_sf.loc[:,:] = np.nan
+            if i == 0:
 
-        sums.append(seg.sum(numeric_only=True, min_count=1))
-        means.append(seg_m.mean(numeric_only=True, skipna=True))
-        mascdb.append(seg_sf[['fallspeed', 'flake_Dmax', 'gan3d_mass']].mean(numeric_only=True, skipna=True))
-        ma_cc = seg_sf[['flake_Dmax', 'fallspeed', 'gan3d_mass']].count()
-        ma_cc = ma_cc.rename({"flake_Dmax":"count_flake_Dmax", "fallspeed":"count_fallspeed", "gan3d_mass":"count_gan3d_mass"})
-        counts.append(ma_cc)
-        zs_cc = seg[['precipitation'#,'Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000'
-        ]].count()
-        zs_cc = zs_cc.rename({"precipitation":"count_precip", #"Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"
-        #                       
+                start_time = df_sum.index.min()
+
+                seg = df_sum.loc[:end_time].copy()
+                seg_m = df_mean.loc[:end_time].copy()
+                seg_sf = sf_class.loc[:end_time].copy()
+
+                delta_seconds = (
+                    end_time - start_time
+                ).total_seconds() + 60
+
+            else:
+
+                previous_end = segment_bounds[i - 1]
+
+                start_time = (
+                    previous_end + pd.Timedelta(seconds=1)
+                )
+
+                seg = df_sum.loc[
+                    start_time:end_time
+                ].copy()
+
+                seg_m = df_mean.loc[
+                    start_time:end_time
+                ].copy()
+
+                seg_sf = sf_class.loc[
+                    start_time:end_time
+                ].copy()
+
+                delta_seconds = event_dt.iloc[i]
+
+        segment_durations.append(delta_seconds / 3600)
+        segment_starts.append(start_time)
+
+        # ----------------------------------------------
+        # Temperature filter (>2 degrees C)
+        # ----------------------------------------------
+
+        all_T = seg_m["air_temperature"].dropna()
+
+        if not all_T.empty and (all_T > 2.0).any():
+
+            seg.loc[:, :] = np.nan
+            seg_m.loc[:, :] = np.nan
+            seg_sf.loc[:, :] = np.nan
+
+        # ----------------------------------------------
+        # Aggregate precipitation and MRR data
+        # ----------------------------------------------
+
+        sums.append(
+            seg.sum(numeric_only=True, min_count=1)
+        )
+
+        means.append(
+            seg_m.mean(numeric_only=True, skipna=True)
+        )
+
+        # ----------------------------------------------
+        # Aggregate MASC properties
+        # ----------------------------------------------
+
+        mascdb.append(
+            seg_sf[
+                ["fallspeed", "flake_Dmax", "gan3d_mass"]
+            ].mean(numeric_only=True, skipna=True)
+        )
+
+        ma_cc = seg_sf[
+            ["flake_Dmax", "fallspeed", "gan3d_mass"]
+        ].count()
+
+        ma_cc = ma_cc.rename({
+            "flake_Dmax": "count_flake_Dmax",
+            "fallspeed": "count_fallspeed",
+            "gan3d_mass": "count_gan3d_mass",
         })
-        zs_counts.append(zs_cc)
-        
 
-        if len(seg_sf) != 0:
-            sclass_60 = test_and_return_dominant_sf_class(seg_sf['snowflake_class_name'], sclass_60, 0.60)
-            sclass_70 = test_and_return_dominant_sf_class(seg_sf['snowflake_class_name'], sclass_70, 0.70)
-            sclass_80 = test_and_return_dominant_sf_class(seg_sf['snowflake_class_name'], sclass_80, 0.80)
-            if i== 0:
-                psd = find_psd_in_timestep(seg_sf, delta_h, index=segment_bounds[i])
-            else:
-                ds_psd = find_psd_in_timestep(seg_sf, delta_h, index=segment_bounds[i])
-                psd = xr.concat([psd, ds_psd], dim="time")
+        counts.append(ma_cc)
+
+        zs_cc = seg[["precipitation"]].count()
+
+        zs_cc = zs_cc.rename({
+            "precipitation": "count_precip"
+        })
+
+        zs_counts.append(zs_cc)
+
+        # ----------------------------------------------
+        # Dominant snowflake classes
+        # ----------------------------------------------
+
+        valid_classes = (
+            seg_sf["snowflake_class_name"]
+            .dropna()
+        )
+
+        if valid_classes.empty:
+
+            sclass_60.append(np.nan)
+            # sclass_70.append(np.nan)
+            # sclass_80.append(np.nan)
 
         else:
-            sclass_60.append(np.nan)
-            sclass_70.append(np.nan)
-            sclass_80.append(np.nan)
-            if i== 0:
-                psd = find_psd_in_timestep(seg_sf, delta_h, index=segment_bounds[i])
-            else:
-                ds_psd = find_psd_in_timestep(seg_sf, delta_h, index=segment_bounds[i])
-                psd = xr.concat([psd, ds_psd], dim="time")
-            
 
+            sclass_60 = test_and_return_dominant_sf_class(
+                valid_classes, sclass_60, threshold
+            )
+
+            # sclass_70 = test_and_return_dominant_sf_class(
+            #     valid_classes, sclass_70, 0.70
+            # )
+
+            # sclass_80 = test_and_return_dominant_sf_class(
+            #     valid_classes, sclass_80, 0.80
+            # )
+
+        # ----------------------------------------------
+        # Particle size distribution
+        # ----------------------------------------------
         
-    # Combine into one Dataframe with all values
-    df_out = pd.concat([pd.DataFrame(sums).set_index(segment_bounds),
-                        pd.DataFrame(means).set_index(segment_bounds),
-                        pd.DataFrame({"snowflake_class_name_60":sclass_60}).set_index(segment_bounds), 
-                        pd.DataFrame({"snowflake_class_name_70":sclass_70}).set_index(segment_bounds),
-                        pd.DataFrame({"snowflake_class_name_80":sclass_80}).set_index(segment_bounds),
-                        pd.DataFrame(mascdb).set_index(segment_bounds),
-                        pd.DataFrame(counts).set_index(segment_bounds),
-                        pd.DataFrame(zs_counts).set_index(segment_bounds)
-                        # pd.DataFrame({"Dmax":dm}).set_index(segment_bounds),
-                        # pd.DataFrame({"particle_mass":mass}).set_index(segment_bounds),
-                        ], axis=1)
-    df_out.rename(columns={"precipitation":"Geonor",}, inplace=True)
+        if i == 0:
+            print("delta_seconds:", delta_seconds)
+            print("type:", type(delta_seconds))
+        ds_psd = find_psd_in_timestep(
+            seg_sf,
+            duration_seconds=delta_seconds,
+            index=end_time,
+)
 
-    # Convert snowfall increments to rate (mm/h)
-    df_out["delta_h"] = df_out.index.to_series().diff().dt.total_seconds() / 3600 # Calculate time difference in hours
-    df_out["rate_mm_h"] = df_out["Geonor"] / df_out["delta_h"] # Convert to mm/h rate
-    df_out[df_out["rate_mm_h"] < min_rate] = np.nan # limit Geonor precipitation to be above 0.1 mm/h
-    df_out['start_time'] = df_out.index - pd.to_timedelta(df_out['delta_h'] * 3600, unit='sec')
+        psd_list.append(ds_psd)
 
-    # for alt in altitudes:
-        # Z from linear sums/means
-        # df_out[f'Z_from_linear_sum_{alt}'] = df_out[f'Ze_linear_sum_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
-        # df_out[f'Z_from_linear_mean_{alt}'] = df_out[f'Ze_linear_mean_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
-        # Rates
+    # --------------------------------------------------
+    # 3. Combine results
+    # --------------------------------------------------
+
+    df_out = pd.concat(
+        [
+            pd.DataFrame(sums, index=segment_bounds),
+            pd.DataFrame(means, index=segment_bounds),
+
+            pd.DataFrame(
+                {f"snowflake_class_name": sclass_60},
+                index=segment_bounds,
+            ),
+
+            # pd.DataFrame(
+            #     {"snowflake_class_name_70": sclass_70},
+            #     index=segment_bounds,
+            # ),
+
+            # pd.DataFrame(
+            #     {"snowflake_class_name_80": sclass_80},
+            #     index=segment_bounds,
+            # ),
+
+            pd.DataFrame(mascdb, index=segment_bounds),
+            pd.DataFrame(counts, index=segment_bounds),
+            pd.DataFrame(zs_counts, index=segment_bounds),
+        ],
+        axis=1,
+    )
+
+    df_out.index.name = "time"
+
+    df_out.rename(
+        columns={"precipitation": "Geonor"},
+        inplace=True,
+    )
+
+    # --------------------------------------------------
+    # 4. Duration and precipitation rates
+    # --------------------------------------------------
+
+    df_out["delta_h"] = segment_durations
+
+    if mode == "fixed":
+        df_out["start_time"] = window_starts
+    else:
+        df_out["start_time"] = (
+            df_out.index
+            - pd.to_timedelta(
+                df_out["delta_h"] * 3600,
+                unit="s",
+            )
+        )
+
+    # Calculate precipitation rate
+    df_out["rate_mm_h"] = (
+        df_out["Geonor"] / df_out["delta_h"]
+    )
+
+    # Identify windows suitable for Z-S analysis
+    df_out["valid_precip"] = (
+        df_out["rate_mm_h"].notna()
+        & (df_out["rate_mm_h"] >= min_rate)
+)
+
+    # --------------------------------------------------
+    # 5. Z-S snowfall rates
+    # --------------------------------------------------
+
     alt = "400"
-    for name in ["Matrosov_aggregate", "Bracci_aggregate", "Nakai_aggregate", "Nakai_graupel", "Pu_graupel", "Schoger", f"S_{a}_{b}"]:
-        df_out[f"{name}_{alt}_mm_h"] = df_out[f"{name}_{alt}m"] / df_out["delta_h"]
 
-        # # Matrosov from Ze_sum
-        # df_out[f'Matrosov_from_ze_sum_{alt}'] = ((df_out[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_out["delta_h"])  # convert rate to mm
+    rate_names = [
+        "Matrosov_aggregate",
+        "Bracci_aggregate",
+        "Nakai_aggregate",
+        "Nakai_graupel",
+        "Pu_graupel",
+        "Schoger",
+        f"S_{a}_{b}",
+    ]
 
-    df_out.index.name = 'time'
-    # ds_out = xr.concat([df_out.to_xarray(), psd], "time")
-    
-    # in addition in the dataframe fallspeed has to be present to adjust for the timing for the reflectivity
-    df_out = df_out[df_out['fallspeed'].notna()]
-    df_out.index
+    for name in rate_names:
 
-    psd = psd.sel(time=df_out.index)
+        source_col = f"{name}_{alt}m"
+        output_col = f"{name}_{alt}_mm_h"
+
+        df_out[output_col] = (
+            df_out[source_col] / df_out["delta_h"]
+        )
+
+    # --------------------------------------------------
+    # 6. Combine PSD results
+    # --------------------------------------------------
+
+    psd = xr.concat(psd_list, dim="time")
+
+    # --------------------------------------------------
+    # 7. Final filtering
+    # --------------------------------------------------
+
+    if mode == "event":
+
+        # Preserve original event-mode filtering
+        keep = (
+            df_out["fallspeed"].notna()
+            & df_out["valid_precip"]
+        )
+
+        df_out = df_out.loc[keep].copy()
+        psd = psd.sel(time=df_out.index)
+
+    # In fixed mode, keep ALL windows.
+    # Do not filter by precipitation or snowflake class.
 
     return df_out, psd
 
-def find_psd_in_timestep(seg_sf, delta_h, index):
+
+def find_psd_in_timestep(seg_sf, duration_seconds, index):
     # Define diameter bins. Choose logarithmic (geometric) bins in diameter 
     bin_edges = np.geomspace(0.0003, 0.03, 25) # Return numbers spaced evenly on a log scale (a geometric progression). 25 bins
     dD = np.diff(bin_edges)
@@ -1175,13 +1468,14 @@ def find_psd_in_timestep(seg_sf, delta_h, index):
     # Convert counts to # concentration
     # effective area
     A_eff = 3.1e-3 # trigger cross-section (m^2). default 3100 mm^2
-    T_sample = delta_h # seconds
+    T_sample = float(duration_seconds) # seconds
 
 
     # number concentration per bin (particles m^-3)
     N_bin = np.full_like(counts, np.nan, dtype=float)
     valid = (v_bin > 0) 
-    N_bin[valid] = counts[valid] / (v_bin[valid] * A_eff * T_sample.values)
+    if T_sample > 0:
+        N_bin[valid] = counts[valid] / (v_bin[valid] * A_eff * T_sample)
 
     # density per unit diameter (particles m^-3 per m)
     n_per_m = N_bin / dD # per meter
@@ -2080,13 +2374,16 @@ def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_l
 
 
 
-def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset, min_rate=0.1, a=56, b=1.2):
+def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset, min_rate=0.1, a=56, b=1.2, mode="event"):
 
 
     
     # Drop rows where there is no fallspeed registered
     # df = df[df['fallspeed'].notna()]
-    seconds_to_subtract = 400 / df['fallspeed']
+    if mode == "event": # use MASC fallspeed
+        seconds_to_subtract = 400 / df['fallspeed']
+    elif mode == "fixed":
+        seconds_to_subtract = 400 / df['W_class_mean']
 
     # Convert seconds into timedeltas
     timedeltas = pd.to_timedelta(seconds_to_subtract, unit='sec')
@@ -2124,36 +2421,92 @@ def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset, min_rate=0.1, a=56
    
     sums = []
     means= []
-    zs_count = []
+    radar_counts = []
     for i in range(len(df)):
-        # seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
-        # seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
         delta_h_i = df['delta_h'].iloc[i]
         shifted_end = df['shifted_time_end'].iloc[i]
+        # seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
+        # seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
+        if pd.isna(shifted_end):
+            sums.append(pd.Series(dtype=float))
+            means.append(pd.Series(dtype=float))
+            radar_counts.append(0)
+            continue
 
-        step = delta_h_i * 60 - 1
-        start = shifted_end - pd.Timedelta(minutes=step)
-        seg = df_sum_offset.loc[start : shifted_end]
-        seg_m = df_mean_offset.loc[start : shifted_end]
-        
+        if mode == "event":
+            step = delta_h_i * 60 - 1
+            start = shifted_end - pd.Timedelta(minutes=step)
+
+            seg = df_sum_offset.loc[start : shifted_end]
+            seg_m = df_mean_offset.loc[start : shifted_end]
+        elif mode == "fixed":
+            duration_i = pd.Timedelta(hours=delta_h_i)
+            start = shifted_end - duration_i
+
+            seg = df_sum_offset.loc[
+                (df_sum_offset.index >= start)
+                & (df_sum_offset.index < shifted_end)
+            ]
+
+            seg_m = df_mean_offset.loc[
+                (df_mean_offset.index >= start)
+                & (df_mean_offset.index < shifted_end)
+            ]
+            
     
         # print(df.index[i], seg)
         sums.append(seg.sum(numeric_only=True, min_count=1))
         means.append(seg_m.mean(numeric_only=True, skipna=True))
+        radar_counts.append(seg[f"S_{a}_{b}_400m"].count())
 
         # zs_cc = seg[['Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000']].count()
         # zs_cc = zs_cc.rename({"Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"})
         # zs_count.append(zs_cc)
 
-
-    df_offset = pd.concat([df[['shifted_time_end', 'Geonor', 'air_temperature', 'wind_direction', 'wind_speed', 'snowflake_class_name_60', 'snowflake_class_name_70', 'snowflake_class_name_80', 'fallspeed', 'flake_Dmax', 'gan3d_mass' ,'delta_h', 'rate_mm_h', 'count_fallspeed', 'count_flake_Dmax', 'count_gan3d_mass', 'count_precip']],
+    columns = [
+    "shifted_time_end",
+    "Geonor",
+    "air_temperature",
+    "wind_direction",
+    "wind_speed",
+    "snowflake_class_name",
+    # "snowflake_class_name_70",
+    # "snowflake_class_name_80",
+    "fallspeed",
+    "flake_Dmax",
+    "gan3d_mass",
+    "delta_h",
+    "rate_mm_h",
+    "count_fallspeed",
+    "count_flake_Dmax",
+    "count_gan3d_mass",
+    "count_precip",
+]
+    if mode == "fixed":
+        columns.append("W_class_mean")
+    df_offset = pd.concat([df[columns],
                         #    pd.DataFrame(zs_count).set_index(df.index[:]),
-                                    pd.DataFrame(sums).set_index(df.index[:]), 
-                                    pd.DataFrame(means).set_index(df.index[:]), ], axis=1)# df['shifted_time_end'][1:].reset_index(drop=True)], axis=1)
+                            pd.DataFrame(sums).set_index(df.index[:]), 
+                            pd.DataFrame(means).set_index(df.index[:]),
+                            ], 
+                            axis=1)# df['shifted_time_end'][1:].reset_index(drop=True)], axis=1)
+    df_offset["count_radar"] = radar_counts
+    # Expected number of one-minute radar observations
+    df_offset["expected_radar"] = (
+        df_offset["delta_h"] * 60
+        ).round().astype(int)
 
-    # limit Geonor precipitation to be above 0.1 mm/h
-    # df_offset = df_offset[df_offset["rate_mm_h"] >= 0.1]
-    df_offset[df_offset["rate_mm_h"] < min_rate] = np.nan
+    # Fraction of valid radar observations
+    df_offset["radar_coverage"] = (
+        df_offset["count_radar"] / df_offset["expected_radar"]
+        )
+#     # limit Geonor precipitation to be above 0.1 mm/h and select only instances where there is a snowflake class and fall speed
+#     df_offset = df_offset.loc[
+#     (df_offset["rate_mm_h"] >= min_rate)
+#     & df_offset["snowflake_class_name_60"].notna()
+#     & df_offset["W_400m"].notna()
+# ].copy()
+    
     df_offset['start_time'] = df_offset.index - pd.to_timedelta(df_offset['delta_h'] * 3600, unit='sec')
 
 

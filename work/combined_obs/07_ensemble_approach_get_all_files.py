@@ -1,4 +1,4 @@
-
+# %%
 import os
 import pathlib
 import sys
@@ -10,6 +10,7 @@ from glob import glob
 import gc
 import shutil
 import psutil
+import argparse
 
 
 hostname = socket.gethostname()
@@ -33,16 +34,16 @@ import functions as fct
 
 
 
-
+# %%
 site = "ANX"
 year = "2023"
 version = IMProToo.__version__
 base_height = np.arange(100, 3200, 100)  # Predefined MRR profile
 
+# %%
 
-filename_template = "Z_S_2Tm_WD_WS_class_precip_event_dt_offset_{site}_{year}.nc"
 
-
+# %%
 def process_single_file_mrr(fname, a, b, site, version, out_dir):
     date_tag = pathlib.Path(fname).stem[-8:]
     out_name = os.path.join(out_dir, f"mrr_improtoo_{version}_{site}_{date_tag}.nc")
@@ -82,7 +83,7 @@ def process_single_file_mrr(fname, a, b, site, version, out_dir):
         gc.collect()
     return out_name
 
-
+# %%
 def list_input_files(INPUT_DATA_DIR, site, year, a, b):
     # Collect file paths
 
@@ -97,7 +98,7 @@ def list_input_files(INPUT_DATA_DIR, site, year, a, b):
     return mrr, met, sf_class
 
 
-
+# %%
 def map_mrr_files_by_date(mrr_files):
     """
     Map YYYYMMDD → MRR file path
@@ -109,7 +110,7 @@ def map_mrr_files_by_date(mrr_files):
         out[date] = f
     return out
 
-
+# %%
 # create the empty daily dataset
 def make_empty_day_dataset(time, range_vals):
     empty1D = np.empty(time.shape,)
@@ -137,30 +138,31 @@ def make_empty_day_dataset(time, range_vals):
                       ))
     
 
-
+# %%
 # Fill values to minuetly data 
 def align_variable(source, target):
     if source is None:
         return target.copy(deep=True)
     return fct.arrays_same_time_res(source, target)
 
-
+# %%
 # load only what I need for ONE day
 def load_day_slice(file_list, var, day_start, day_end):
     for f in file_list:
-        ds = xr.open_dataset(f, engine="h5netcdf", cache=False)
-        if var in ds:
-            try:
-                out = ds[var].sel(time=slice(day_start, day_end))
-                if out.time.size > 0:
-                    out.load()
-                    return out
+        with xr.open_dataset(
+            f, engine="h5netcdf", cache=False
+        ) as ds:
+            if var not in ds:
+                continue
 
-            finally:
-                ds.close()
-    return out
+            out = ds[var].sel(time=slice(day_start, day_end))
 
+            if out.time.size > 0:
+                return out.load()
 
+    return None
+
+# %%
 # per day processing
 def process_one_day(date, mrr_files, met_files,  a, b,):#year, base_height, out_dir, site, ):
     # Define start and end time of individual day
@@ -226,13 +228,13 @@ def process_one_day(date, mrr_files, met_files,  a, b,):#year, base_height, out_
     finally:
         ds_mrr.close()
         # dsx.close()
-        del ds_mrr, Sret, S_ensemble #, dsx
+        # del ds_mrr, Sret, S_ensemble #, dsx
         gc.collect()
 
+# %%
 
 
-
-
+# %%
 # Accumulate incrementally
 def extract_event_tables(dsx, a, b):
     df_sum = dsx[['precipitation', 'Matrosov_aggregate_400m', 'Bracci_aggregate_400m', 'Nakai_aggregate_400m', 'Nakai_graupel_400m', 'Pu_graupel_400m', 'Schoger_400m', f'S_{a}_{b}_400m',]].to_dataframe().sort_values("time")
@@ -244,7 +246,7 @@ def extract_event_tables(dsx, a, b):
 
     return df_sum, df_mean
 
-
+# %%
 def build_season_tables(mrr_map, met_files, a, b):
     dfs_sum = []
     dfs_mean = []
@@ -265,29 +267,111 @@ def build_season_tables(mrr_map, met_files, a, b):
         pd.concat(dfs_mean).sort_index()
         )
 
+# %%
+def calculate_class_fallspeeds(df_windows, df_mean, duration, class_column="snowflake_class_name"):
+    """
+    Calculate class-specific mean MRR fall speeds using all valid
+    original 1-minute observations within selected fixed windows.
+    """
 
+    # Select windows passing Geonor and classification criteria
+    selected = df_windows.loc[
+        df_windows["valid_precip"]
+        & df_windows[class_column].notna()
+    ].copy()
+
+    # Assign original MRR observations to window ends
+    mrr = df_mean[["W_400m"]].copy()
+    mrr = mrr.loc[
+        (mrr["W_400m"] >= -7)
+        & (mrr["W_400m"] <= 7)].copy()
+
+    mrr["window_end"] = (
+        mrr.index.floor(duration)
+        + pd.Timedelta(duration)
+    )
+
+    # Match MRR observations to selected windows
+    mrr = mrr.join(
+        selected[[class_column]],
+        on="window_end",
+        how="inner"
+    ).dropna(subset=["W_400m"]).copy()
+
+    # Calculate class-specific statistics
+    stats = (
+        mrr.groupby(class_column)["W_400m"]
+        .agg(["mean", "std", "count"])
+    )
+
+    stats["n_windows"] = (
+        mrr.groupby(class_column)["window_end"]
+        .nunique()
+    )
+
+    return stats, mrr
+
+# %%
 # Time offset
-def apply_offset(df_corr, df_sum, df_mean, a, b):
-    df_off = fct.apply_timeoffset_to_df(df=df_corr, df_sum_offset=df_sum, df_mean_offset=df_mean, a=a, b=b)
+def apply_offset(df_corr, df_sum, df_mean, a, b, mode="fixed", duration="4min"):
+    df_corr = df_corr.copy()
+    class_column = f"snowflake_class_name"
+
+    if mode == "fixed":
+        # calculate constant fall speed from MRR for each class
+        stats_fixed, _ = calculate_class_fallspeeds(df_corr, df_mean, duration, class_column=class_column)
+        # assign constant fall speed to each classified window
+        class_fallspeeds = stats_fixed['mean']
+        # df_corr['W_class_mean'] = (df_corr[class_column].map(class_fallspeeds).where(df_corr['W_400m'].notna()))
+        df_corr["W_class_mean"] = (
+            df_corr[class_column].map(class_fallspeeds)
+            )   # calculate one mean velocity for each snowflake class and apply that velocity to all windows belonging to that class. means that windows without an unshifted MRR velocity can still receive a time offset based on their MASC snowflake classification.
+
+    # now apply time offset    
+    df_off = fct.apply_timeoffset_to_df(df=df_corr, df_sum_offset=df_sum, df_mean_offset=df_mean, a=a, b=b, mode=mode)
     df_off.index.name = "time"
+
+    # Select valid observations after time correction
+    valid = (
+        (df_off["rate_mm_h"] >= 0.1)    # Valid Geonor precipitation
+        & df_off[class_column].notna()  # MASC classification at the selected threshold
+        # & df_off["W_400m"].notna()      # MRR velocity available in the shifted interval
+    )
+    if mode == "fixed":
+        valid &= df_off["W_class_mean"].gt(0)  # Valid positive class-mean velocity for calculating the fall time
+    elif mode == "event":
+        valid &= df_off['fallspeed'].gt(0)
+
+    df_off = df_off.loc[valid].copy()
     return df_off
 
-
-# Event processing
-def run_event_processing(df_sum, df_mean, sf_class, a,b):
-    df_corr, psd_corr = fct.process_precip_segments(df_sum, df_mean, sf_class, mode="event", a=a, b=b)
+# %%
+def run_event_processing(
+    df_sum, df_mean, sf_class, a, b,
+    mode="fixed", duration="4min", threshold=60
+):
+    df_corr, psd_corr = fct.process_precip_segments(
+        df_sum,
+        df_mean,
+        sf_class,
+        mode=mode,
+        duration=duration,
+        a=a,
+        b=b,
+        threshold=threshold
+    )
 
     df_corr.index.name = "time"
     return df_corr, psd_corr
 
-
+# %%
 def write_final(ds, out_path):
     encoding = {v: {"zlib": True, "complevel":4} for v in ds.data_vars}
     ds.to_netcdf(out_path, encoding=encoding, engine="h5netcdf")
     ds.close()
 
-
-def run_nearest_crystal_variant(df_sum, df_mean, sf_class):
+# %%
+def run_nearest_crystal_variant(df_sum, df_mean, sf_class, mode="event", duration="1H", threshold=60):
     t_df_sum = df_sum.copy()
     t_df_mean = df_mean.copy()
     t_sf_class = sf_class.copy()
@@ -323,17 +407,17 @@ def run_nearest_crystal_variant(df_sum, df_mean, sf_class):
     sf_assigned = sf_assigned.set_index("assigned_time").sort_index()
 
     
-    df_corr, psd_corr = run_event_processing(t_df_sum, t_df_mean, sf_assigned, a, b)
+    df_corr, psd_corr = run_event_processing(t_df_sum, t_df_mean, sf_assigned, a, b, mode=mode, duration=duration, threshold=threshold)
 
     t_df_sum_off = t_df_sum[['Matrosov_aggregate_400m', 'Bracci_aggregate_400m', 'Nakai_aggregate_400m', 'Nakai_graupel_400m', 'Pu_graupel_400m', 'Schoger_400m', f'S_{a}_{b}_400m']]
     t_df_mean_off = t_df_mean[['W_400m']]
     
-    df_corr_offset = apply_offset(df_corr, t_df_sum_off, t_df_mean_off, a, b)
+    df_corr_offset = apply_offset(df_corr, t_df_sum_off, t_df_mean_off, a, b, mode, duration)
 
     return df_corr_offset.to_xarray()
 
 
-
+# %%
 def cleanup_intermediate_files(a, b, base_dir):
     """
     Remove intermediate daily files for one ensemble member.
@@ -350,17 +434,26 @@ def cleanup_intermediate_files(a, b, base_dir):
         print(f"🧹 Removing intermediate files in {tmp_dir}")
         shutil.rmtree(tmp_dir)
 
+# %%
+def final_output_path(nc_dir, site, year, mode, threshold, duration=None):
+    label = f"{mode}_{duration}" if mode == "fixed" else "event"
 
+    return os.path.join(
+        nc_dir,
+        f"{label}_{threshold}_dt_offset_{site}_{year}.nc"
+    )
+
+# %%
 a_int = int(80)
 b_val = round(1.0,2)
 a= a_int
 b=b_val
 
+# %%
 
 
-
-
-def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, version):
+# %%
+def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, version, out_file, mode="fixed", duration="4min", threshold=60):
     print("\n" + "="*60)
     print(f"🚀 START ensemble member a={a}, b={b}")
     print(f"Python PID: {os.getpid()}")
@@ -405,7 +498,10 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
     # 2. Build season-wide event tables (STREAMING)
     # ------------------------------------------------------------------
     dsx, df_sum, df_mean = build_season_tables(mrr_map, met_files,  a, b)
-    
+    # out_file = os.path.join(nc_dir, f"10min_filled_obs_hatpro_airport_WD_WS_T_{site}_{year}.nc")
+    # if len(dsx.time) > 0:
+    #     write_final(dsx, out_file)
+    #     print(f"Written {out_file}")
     gc.collect()
     
 
@@ -440,7 +536,7 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
     # print("⏱ Running event processing")
     # print("df_sum shape:", df_sum.shape)
     # print("df_mean shape:", df_mean.shape)
-    df_corr, psd_corr = run_event_processing(df_sum, df_mean, sf_class, a, b)
+    df_corr, psd_corr = run_event_processing(df_sum, df_mean, sf_class, a, b, mode=mode, duration=duration, threshold=threshold)
     
     
 
@@ -452,10 +548,50 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
     # print("🕒 Applying time offset")
     # assert df_corr.index.is_monotonic_increasing
 
-    df_sum_offset = df_sum[['Matrosov_aggregate_400m', 'Bracci_aggregate_400m', 'Nakai_aggregate_400m', 'Nakai_graupel_400m', 'Pu_graupel_400m', 'Schoger_400m', f'S_{a}_{b}_400m']].copy()
+    df_sum_offset = df_sum[
+        [
+            'Matrosov_aggregate_400m', 
+            'Bracci_aggregate_400m', 
+            'Nakai_aggregate_400m', 
+            'Nakai_graupel_400m', 
+            'Pu_graupel_400m', 
+            'Schoger_400m', 
+            f'S_{a}_{b}_400m'
+            ]
+            ].copy()
     df_mean_offset = df_mean[['W_400m']].copy()
-    
-    df_corr_offset = apply_offset(df_corr, df_sum_offset, df_mean_offset, a, b)
+
+    df_corr_offset = apply_offset(
+            df_corr, 
+            df_sum_offset, 
+            df_mean_offset, 
+            a, 
+            b, 
+            mode=mode, 
+            duration=duration, )
+    print(
+        f"{threshold}%: "
+        f"{len(df_corr_offset)} observations"
+    )
+    # coverage = df_corr_offset["radar_coverage"]
+
+    # print(f"\nRadar coverage: {mode}, {duration}")
+    # print(f"Total retained windows: {len(df_corr_offset)}")
+    # print(f"Complete windows (100%): {(coverage == 1).sum()}")
+    # print(f"Complete windows (%): {(coverage == 1).mean() * 100:.1f}")
+    # print(f"Windows >= 90% coverage: {(coverage >= 0.9).sum()}")
+    # print(f"Windows >= 75% coverage: {(coverage >= 0.75).sum()}")
+    # print(f"Mean radar coverage: {coverage.mean() * 100:.1f}%")
+    # print(f"Minimum radar coverage: {coverage.min() * 100:.1f}%")
+    # print(df_corr_offset["radar_coverage"]
+    #       .describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9])
+    #       )
+    # print("Coverage > 100%:", (df_corr_offset["radar_coverage"] > 1.001).sum())
+
+    # print("No radar data:", (coverage == 0).sum())
+    # print("Partial coverage:", ((coverage > 0) & (coverage < 1)).sum())
+    # print("Complete coverage:", (coverage == 1).sum())
+
     del df_corr, psd_corr
     gc.collect()
     
@@ -464,18 +600,31 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
     # ------------------------------------------------------------------
 
     # print(df_corr_offset.columns[df_corr_offset.columns.duplicated()])
+    df_final = df_corr_offset.copy()
 
-    ds_final = df_corr_offset.to_xarray()
+    # # Keep only the classification column for this threshold
+    # other_thresholds = [t for t in [60, 70, 80] if t != threshold]
 
-    del df_corr_offset
-    gc.collect()
+    # columns_to_drop = [
+    #         f"snowflake_class_name_{t}"
+    #         for t in other_thresholds
+    #         if f"snowflake_class_name_{t}" in df_final.columns
+    #     ]
 
+        # df_final = df_final.drop(columns=columns_to_drop)
 
-    out_file = os.path.join(nc_dir, f"Z_S_2Tm_WD_WS_class_precip_event_dt_offset_{site}_{year}.nc")
-    if len(ds_final.time) > 0:
+    ds_final = df_final.to_xarray()
+
+    
+
+    if ds_final.sizes.get("time", 0) > 0:
         write_final(ds_final, out_file)
         print(f"Written {out_file}")
+    else:
+        print(f"No observations for threshold {threshold}%")
+        ds_final.close()
 
+    del df_final, ds_final
 
     # # ------------------------------------------------------------------
     # # 7. Nearest-crystal variant (optional but faithful)
@@ -486,65 +635,72 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
     #     write_final(ds_final, out_file)
     #     print(f"Written {out_file}")
 
-    # # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # 10. Cleanup (IMPORTANT)
     # ------------------------------------------------------------------
-    del df_sum, df_mean, df_sum_offset, df_mean_offset, sf_class, ds_final, #ds_final_nearest
+    del df_corr_offset
     gc.collect()
 
 
     
 
 
-if __name__ == "__main__":
-    # a_range = np.concatenate([np.arange(1,10,1), np.arange(10,330,10)])
-    a_range = np.arange(300,330,10)
-    b_range = np.arange(5, 6.1, 0.1)#np.arange(0.8,6.1,0.1)
+# %%
+parser = argparse.ArgumentParser()
+parser.add_argument("--worker", type=int, required=True, choices=range(6))
+args = parser.parse_args()
+
+a_range = np.concatenate([
+    np.arange(1,10,1), 
+    np.arange(10,330,10)
+    ])
+b_range = np.arange(0.8,6.1,0.1)
+
+# Split a_range into 6 non-overlapping groups
+a_groups = np.array_split(a_range, 6)
+a_range = a_groups[args.worker]
+
+print(f"Worker {args.worker}: a values = {a_range}", flush=True)
+
+duration = "4min"
+# duration = None
+mode = "fixed"
+threshold = 60
+for a in a_range:
+    for b in b_range:
+        a = int(a)
+        b = round(b, 2)
+
+        nc_dir = os.path.join(OUTPUT_DATA_DIR, f"ANX_obs_EM_{a}_{b}")
+
+        # for threshold in [60, ]:#70, 80]:
+        if duration == None:
+                out_file = final_output_path(nc_dir, site, year, mode=mode, threshold=threshold) 
+        else:
+                out_file = final_output_path(nc_dir, site, year, mode=mode, threshold=threshold, duration=duration)
+        if os.path.exists(out_file):
+                print(f"Skipping a={a}, b={b}, threshold={threshold}%")
+                continue
+        start_time = time.perf_counter()
+
+        print(
+            f"\nWorker {args.worker}: running a={a}, b={b}",
+            flush=True
+        )
+        if duration == None:
+                process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, version, mode=mode, threshold=threshold, out_file=out_file) 
+        else:
+                process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, version, mode=mode, threshold=threshold, duration=duration, out_file=out_file)
+
+        elapsed = time.perf_counter() - start_time
+        print(
+            f"Worker {args.worker}: a={a}, b={b} "
+            f"finished in {elapsed:.1f} s",
+            flush=True
+        )
 
 
-    for a in a_range:
-        for b in b_range:
-            start_time = time.perf_counter()
-            a = int(a)
-            b = round(b, 2)
-            
-            out_name = f'{OUTPUT_DATA_DIR}/ANX_obs_EM_{a}_{b}/Z_S_2Tm_WD_WS_class_threshold_precip_event_dt_offset_{site}_{year}.nc'
-            if out_name not in glob(out_name):
-                print(f"\n🔹 Running ensemble member a={a}, b={b}")
-                process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, version)
-                end_time = time.perf_counter()
-
-                elapsed_time = round((end_time - start_time), 2)
-                print(f"Execution time (a={a}, b={b}): {elapsed_time} s")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        # # cleanup_intermediate_files(a, b)
-
-
-
-
-
-
-
-
-
-
-
+# %%
 
 
 
