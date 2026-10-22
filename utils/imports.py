@@ -9,7 +9,7 @@ import gzip    # conda install -c conda-forge gzip
 import datetime
 from cmcrameri import cm            #  conda install -c conda-forge cmcrameri 
 import matplotlib.pyplot as plt     # conda install -c conda-forge matplotlib==3.2
-from matplotlib.dates import DateFormatter, date2num, DayLocator
+from matplotlib.dates import DateFormatter, date2num, DayLocator, HourLocator
 import pandas as pd
 import dask.array as da
 # import functions as fct
