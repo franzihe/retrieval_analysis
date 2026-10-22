@@ -662,7 +662,7 @@ a_range = a_groups[args.worker]
 
 print(f"Worker {args.worker}: a values = {a_range}", flush=True)
 
-duration = "4min"
+duration = "10min"
 # duration = None
 mode = "fixed"
 threshold = 60
