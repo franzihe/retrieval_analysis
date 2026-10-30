@@ -1053,11 +1053,12 @@ def process_precip_segments(
     sf_class,
     mode="fixed",
     duration="4min",
-    min_rate=0.1,
-    altitudes=[400, 800, 1000],
+    # min_rate=0.1,
+    # altitudes=[400, 800, 1000],
     a=56,
     b=1.2,
-    threshold=60
+    threshold=60,
+    diagnostic=False
 ):
     """
     Aggregate precipitation observations into events or fixed windows.
@@ -1080,6 +1081,8 @@ def process_precip_segments(
     psd : xarray.Dataset or xarray.DataArray
         PSD data aligned with df_out.
     """
+    print(f"Inside process_precip_segments: mode={mode}, diagnostic={diagnostic}")
+
 
     if mode not in ("event", "fixed"):
         raise ValueError("mode must be 'event' or 'fixed'")
@@ -1159,6 +1162,8 @@ def process_precip_segments(
     psd_list = []
     segment_durations = []
     segment_starts = []
+    mean_temperatures = []
+    temperature_valid = []
 
     for i, end_time in enumerate(segment_bounds):
 
@@ -1227,18 +1232,24 @@ def process_precip_segments(
         segment_durations.append(delta_seconds / 3600)
         segment_starts.append(start_time)
 
-        # ----------------------------------------------
-        # Temperature filter (>2 degrees C)
-        # ----------------------------------------------
+        # # ----------------------------------------------
+        # # Temperature filter (>2 degrees C)
+        # # ----------------------------------------------
 
-        all_T = seg_m["air_temperature"].dropna()
+        # all_T = seg_m["air_temperature"].dropna()
 
-        if not all_T.empty and (all_T > 2.0).any():
+        # if not all_T.empty and (all_T > 2.0).any():
+        mean_T = seg_m["air_temperature"].mean(skipna=True)
+        # Save diagnostic information before filtering
+        mean_temperatures.append(mean_T)
 
+        temp_ok = pd.notna(mean_T) and mean_T <= 2.0
+        temperature_valid.append(temp_ok)
+        
+        if not temp_ok:
             seg.loc[:, :] = np.nan
             seg_m.loc[:, :] = np.nan
             seg_sf.loc[:, :] = np.nan
-
         # ----------------------------------------------
         # Aggregate precipitation and MRR data
         # ----------------------------------------------
@@ -1297,7 +1308,13 @@ def process_precip_segments(
             # sclass_80.append(np.nan)
 
         else:
-
+            # if len(sclass_60) < 10:
+            #     print(
+            #         "Window:", end_time,
+            #         "N:", len(valid_classes),
+            #         "Fractions:",
+            #         valid_classes.value_counts(normalize=True).to_dict()
+            #     )
             sclass_60 = test_and_return_dominant_sf_class(
                 valid_classes, sclass_60, threshold
             )
@@ -1368,6 +1385,12 @@ def process_precip_segments(
     # --------------------------------------------------
 
     df_out["delta_h"] = segment_durations
+    df_out["mean_T_before_filter"] = mean_temperatures
+    df_out["temperature_valid"] = temperature_valid
+
+    # flag long intervals 
+    max_gap_min = 60
+    df_out["gap_too_long"] = (df_out["delta_h"] *60 > max_gap_min)
 
     if mode == "fixed":
         df_out["start_time"] = window_starts
@@ -1388,8 +1411,8 @@ def process_precip_segments(
     # Identify windows suitable for Z-S analysis
     df_out["valid_precip"] = (
         df_out["rate_mm_h"].notna()
-        & (df_out["rate_mm_h"] >= min_rate)
-)
+        # & (df_out["rate_mm_h"] >= min_rate)
+    )
 
     # --------------------------------------------------
     # 5. Z-S snowfall rates
@@ -1426,7 +1449,7 @@ def process_precip_segments(
     # 7. Final filtering
     # --------------------------------------------------
 
-    if mode == "event":
+    if mode == "event" and not diagnostic:
 
         # Preserve original event-mode filtering
         keep = (
@@ -1689,7 +1712,6 @@ def plt_masc_vs_mrr_fallspeed(
     plt.tight_layout(rect=[0,0,1,1])
 
 def get_ds_in_precip_event(df, ds):
-
     slices = []
     for end_time, start_time in df['start_time'].items():
         t0 = start_time #+ pd.Timedelta(seconds=1)
@@ -1702,10 +1724,12 @@ def get_ds_in_precip_event(df, ds):
         # ds_subset = ds_subset.expand_dims(interval=[pd.to_datetime(end_time)])
 
         slices.append(ds_subset)
+    if len(slices) != 0:
+        result = xr.concat(slices, dim='time').sortby("time")
 
-    result = xr.concat(slices, dim='time').sortby("time")
-
-    return result
+        return result
+    else:
+        return xr.DataArray([np.nan])
 
 def plt_fallspeed_distribution_by_class(df_only_class, binwidth=0.25,stat='percent', binrange_v=[0,7], binrange_m=[0, 0.0525], title=None):
 
@@ -1992,11 +2016,11 @@ def plt_precip_scatter_literature(df, title=" "):
     # create the new map
     custom_cmap = LinearSegmentedColormap.from_list(
     'Custom cmap', cmaplist, 7) # cmap.N
-    equations = {"Matrosov_a": ['Aggregate', "(2007)", "#C51B7D", 56, 1.2],#["Z = 56 S$^{1.2}$", ], 
-             "Bracci_a": ['Aggregate', "et al. (2022)", "#F768A1", 134, 1.25],#["Z = 134 S$^{1.25}$", ],
+    equations = {"Matrosov_aggregate": ['Aggregate', "(2007)", "#C51B7D", 56, 1.2],#["Z = 56 S$^{1.2}$", ], 
+             "Bracci_aggregate": ['Aggregate', "et al. (2022)", "#F768A1", 134, 1.25],#["Z = 134 S$^{1.25}$", ],
             #  "Nakai_a": ['Aggregate', "et al. (2022)", custom_cmap(2)],#["Z = 107.4 S$^{1.67}$"],
             #  "Nakai_g": ['Graupel', "et al. (2022)", custom_cmap(4)], # ["Z = 227.4 S$^{1.67}$", ],
-             "Pu_g" : ['Graupel', "et al. (2020)", "#FDB863", 252, 2.03], #["Z = 252 S$^{2.03}$", ]
+             "Pu_graupel" : ['Graupel', "et al. (2020)", "#FDB863", 252, 2.03], #["Z = 252 S$^{2.03}$", ]
              "Schoger": ['All', "et al. (2021)", "#00BFC4", 77.61, 1.22]
              }
 
@@ -2374,7 +2398,9 @@ def plt_residuals_dimension_fits(ds, df, log_quad_fit_z, b_local_z, a_lin_z, b_l
 
 
 
-def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset, min_rate=0.1, a=56, b=1.2, mode="event"):
+def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset, 
+                        #    min_rate=0.1, 
+                           a=56, b=1.2, mode="event"):
 
 
     
@@ -2662,13 +2688,14 @@ def plt_chessboard(df, counts, cbar_label, category, vmin = 0,vmax=1):
         # hightlight the cell with minimum RMSE/MAE
         # index of min
         # iy, ix = df[class_key].stack().idxmin()
-        iy, ix= np.unravel_index(np.nanargmin(abs(df[class_key].values)), df[class_key].shape)
-        # rectangle edges
-        ax.add_patch(Rectangle((ix, iy), 1, 1, # index space
-                     fill=False, edgecolor="black", linewidth=3.5, zorder=9))
-        
-        ax.add_patch(Rectangle((ix,iy), 1, 1,
-                     fill=False, edgecolor="white", linewidth=2.5, zorder=10))
+        if df[class_key].isna().all(axis=None) == False:
+            iy, ix= np.unravel_index(np.nanargmin(abs(df[class_key].values)), df[class_key].shape)
+            # rectangle edges
+            ax.add_patch(Rectangle((ix, iy), 1, 1, # index space
+                        fill=False, edgecolor="black", linewidth=3.5, zorder=9))
+            
+            ax.add_patch(Rectangle((ix,iy), 1, 1,
+                        fill=False, edgecolor="white", linewidth=2.5, zorder=10))
 
         # # Highlight literature boxes
         a_to_idx = {a:i for i,a in enumerate(a_vals)}
@@ -2740,6 +2767,8 @@ def extract_best_ab(df_metrics):
                 stacked = df.stack()
 
                 if stacked.empty or stacked.isna().all():
+                    # print(metric_key, thresh, class_key, "empty")
+                    result[metric_key][thresh][class_key] = (np.nan, np.nan)
                     continue
                 result[metric_key][thresh][class_key] = stacked.idxmin()
 
@@ -2750,11 +2779,14 @@ def build_pp(cfg, source_dict, delta_h, thresh, time_index):
 
     aligned = []
     for cls, (a, b) in cfg.items():
-        key = f"S_{a}_{b}_400_mm_h"
-        s = source_dict[thresh][cls][key]
+        if np.isnan(a) or np.isnan(b):
+            s = pd.Series(np.nan, index=time_index)
+        else:
+            key = f"S_{a}_{b}_400_mm_h"
+            s = source_dict[thresh][cls][key]
 
-        # KEEP NaNs here
-        s = s.reindex(time_index)
+            # KEEP NaNs here
+            s = s.reindex(time_index)
 
         aligned.append(s)
 

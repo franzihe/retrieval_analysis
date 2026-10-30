@@ -333,8 +333,9 @@ def apply_offset(df_corr, df_sum, df_mean, a, b, mode="fixed", duration="4min"):
 
     # Select valid observations after time correction
     valid = (
-        (df_off["rate_mm_h"] >= 0.1)    # Valid Geonor precipitation
-        & df_off[class_column].notna()  # MASC classification at the selected threshold
+        # (df_off["rate_mm_h"] >= 0.1)    # Valid Geonor precipitation
+        # & 
+        df_off[class_column].notna()  # MASC classification at the selected threshold
         # & df_off["W_400m"].notna()      # MRR velocity available in the shifted interval
     )
     if mode == "fixed":
@@ -348,7 +349,7 @@ def apply_offset(df_corr, df_sum, df_mean, a, b, mode="fixed", duration="4min"):
 # %%
 def run_event_processing(
     df_sum, df_mean, sf_class, a, b,
-    mode="fixed", duration="4min", threshold=60
+    mode="fixed", duration="4min", threshold=60, diagnostic=False,
 ):
     df_corr, psd_corr = fct.process_precip_segments(
         df_sum,
@@ -358,7 +359,8 @@ def run_event_processing(
         duration=duration,
         a=a,
         b=b,
-        threshold=threshold
+        threshold=threshold,
+        diagnostic=diagnostic
     )
 
     df_corr.index.name = "time"
@@ -407,7 +409,7 @@ def run_nearest_crystal_variant(df_sum, df_mean, sf_class, mode="event", duratio
     sf_assigned = sf_assigned.set_index("assigned_time").sort_index()
 
     
-    df_corr, psd_corr = run_event_processing(t_df_sum, t_df_mean, sf_assigned, a, b, mode=mode, duration=duration, threshold=threshold)
+    df_corr, psd_corr = run_event_processing(t_df_sum, t_df_mean, sf_assigned, a, b, mode=mode, duration=duration, threshold=threshold, diagnostic=False)
 
     t_df_sum_off = t_df_sum[['Matrosov_aggregate_400m', 'Bracci_aggregate_400m', 'Nakai_aggregate_400m', 'Nakai_graupel_400m', 'Pu_graupel_400m', 'Schoger_400m', f'S_{a}_{b}_400m']]
     t_df_mean_off = t_df_mean[['W_400m']]
@@ -530,13 +532,24 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
     sf_class.loc[sf_class['fallspeed'] <= 0.2, 'fallspeed'] = np.nan
     sf_class = sf_class[sf_class['fallspeed'].notna()]
 
+    # print(sf_class["snowflake_class_name"].value_counts(dropna=False))
+    # print(sf_class["snowflake_class_name"].unique())
+
+    # set 1-min Geonor precipitation to nan where it is smaller than 0.1mm/h. But the precipitation at the Geonor is in mm so we have to use 0.1mm/60 min to get it correct.
+    df_sum.loc[df_sum['precipitation'] < 0.1/60, 'precipitation'] = np.nan
     # ------------------------------------------------------------------
     # 4. Process precipitation events
     # ------------------------------------------------------------------
     # print("⏱ Running event processing")
     # print("df_sum shape:", df_sum.shape)
     # print("df_mean shape:", df_mean.shape)
-    df_corr, psd_corr = run_event_processing(df_sum, df_mean, sf_class, a, b, mode=mode, duration=duration, threshold=threshold)
+
+    
+
+    df_corr, psd_corr = run_event_processing(df_sum, df_mean, sf_class, a, b, mode=mode, duration=duration, threshold=threshold, diagnostic=False)
+
+    print("\nBEFORE time offset:")
+    print(df_corr["snowflake_class_name"].value_counts(dropna=False))
     
     
 
@@ -573,6 +586,8 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
         f"{threshold}%: "
         f"{len(df_corr_offset)} observations"
     )
+    print("\nAFTER time offset:")
+    print(df_corr_offset["snowflake_class_name"].value_counts(dropna=False))
     # coverage = df_corr_offset["radar_coverage"]
 
     # print(f"\nRadar coverage: {mode}, {duration}")
@@ -645,62 +660,66 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
     
 
 
-# %%
-parser = argparse.ArgumentParser()
-parser.add_argument("--worker", type=int, required=True, choices=range(6))
-args = parser.parse_args()
+# # %%
+# parser = argparse.ArgumentParser()
+# parser.add_argument("--worker", type=int, required=True, choices=range(6))
+# args = parser.parse_args()
 
-a_range = np.concatenate([
-    np.arange(1,10,1), 
-    np.arange(10,330,10)
-    ])
-b_range = np.arange(0.8,6.1,0.1)
+# a_range = np.concatenate([
+#     np.arange(1,10,1), 
+#     np.arange(10,330,10)
+#     ])
+# b_range = np.arange(0.8,6.1,0.1)
+# # a_range = np.arange(1,2)
+# # b_range = np.arange(0.8, 0.9, 0.1)
 
-# Split a_range into 6 non-overlapping groups
-a_groups = np.array_split(a_range, 6)
-a_range = a_groups[args.worker]
+# # Split a_range into 6 non-overlapping groups
+# a_groups = np.array_split(a_range, 6)
+# a_range = a_groups[args.worker]
 
-print(f"Worker {args.worker}: a values = {a_range}", flush=True)
+# print(f"Worker {args.worker}: a values = {a_range}", flush=True)
 
-duration = "10min"
+# # duration = "4min"
 # duration = None
-mode = "fixed"
-threshold = 60
-for a in a_range:
-    for b in b_range:
-        a = int(a)
-        b = round(b, 2)
+# # mode = "fixed"
+# mode = "event"
+# threshold = 60
+# for a in a_range:
+#     for b in b_range:
+# # for a, b in [(1, 0.8), (80, 1.0), (150, 2.0), (300, 5.0)]:
+#         a = int(a)
+#         b = round(b, 2)
 
-        nc_dir = os.path.join(OUTPUT_DATA_DIR, f"ANX_obs_EM_{a}_{b}")
+#         nc_dir = os.path.join(OUTPUT_DATA_DIR, f"ANX_obs_EM_{a}_{b}")
 
-        # for threshold in [60, ]:#70, 80]:
-        if duration == None:
-                out_file = final_output_path(nc_dir, site, year, mode=mode, threshold=threshold) 
-        else:
-                out_file = final_output_path(nc_dir, site, year, mode=mode, threshold=threshold, duration=duration)
-        if os.path.exists(out_file):
-                print(f"Skipping a={a}, b={b}, threshold={threshold}%")
-                continue
-        start_time = time.perf_counter()
+#         # for threshold in [60, ]:#70, 80]:
+#         if duration == None:
+#                 out_file = final_output_path(nc_dir, site, year, mode=mode, threshold=threshold) 
+#         else:
+#                 out_file = final_output_path(nc_dir, site, year, mode=mode, threshold=threshold, duration=duration)
+#         # if os.path.exists(out_file):
+#         #         print(f"Skipping a={a}, b={b}, threshold={threshold}%")
+#         #         continue
+#         start_time = time.perf_counter()
 
-        print(
-            f"\nWorker {args.worker}: running a={a}, b={b}",
-            flush=True
-        )
-        if duration == None:
-                process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, version, mode=mode, threshold=threshold, out_file=out_file) 
-        else:
-                process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, version, mode=mode, threshold=threshold, duration=duration, out_file=out_file)
+#         print(
+#             f"\nWorker {args.worker}: running a={a}, b={b}",
+#             flush=True
+#         )
+#         if duration == None:
+#                 process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, version, mode=mode, threshold=threshold, out_file=out_file) 
+#         else:
+#                 process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, version, mode=mode, threshold=threshold, duration=duration, out_file=out_file)
 
-        elapsed = time.perf_counter() - start_time
-        print(
-            f"Worker {args.worker}: a={a}, b={b} "
-            f"finished in {elapsed:.1f} s",
-            flush=True
-        )
+#         elapsed = time.perf_counter() - start_time
+#         print(
+#             # f"Worker {args.worker}: a={a}, b={b} "
+#             f"finished in {elapsed:.1f} s",
+#             flush=True
+#         )
 
 
-# %%
+# # %%
 
 
 
