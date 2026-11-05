@@ -1095,21 +1095,18 @@ def process_precip_segments(
     # --------------------------------------------------
 
     if mode == "event":
-
         notna_idx = df_sum["precipitation"].dropna().index
-        segment_bounds = notna_idx.append(
-            pd.Index([df_sum.index[-1]])
-        ).unique().sort_values()
+        segment_bounds = notna_idx.unique().sort_values()
 
         if len(segment_bounds) == 0:
             raise ValueError("No event boundaries found")
 
         # Preserve the original event selection logic
         event_dt = (
-            segment_bounds.to_series()
-            .diff()
-            .dt.total_seconds()
-        )
+                    segment_bounds.to_series()
+                    .diff()
+                    .dt.total_seconds()
+                )
 
     else:
 
@@ -1156,14 +1153,14 @@ def process_precip_segments(
     zs_counts = []
 
     sclass_60 = []
-    # sclass_70 = []
-    # sclass_80 = []
 
     psd_list = []
     segment_durations = []
     segment_starts = []
     mean_temperatures = []
     temperature_valid = []
+    new_sequence = []
+    max_gap_min = 60
 
     for i, end_time in enumerate(segment_bounds):
 
@@ -1193,41 +1190,37 @@ def process_precip_segments(
 
             delta_seconds = step.total_seconds()
 
-        else:
+        else: # Event mode: variable windows between Geonor increments,
+            # but start a new one-minute window after a long dry gap.
 
             if i == 0:
+                     # First Geonor increment: one-minute window
+                start_time = end_time
 
-                start_time = df_sum.index.min()
-
-                seg = df_sum.loc[:end_time].copy()
-                seg_m = df_mean.loc[:end_time].copy()
-                seg_sf = sf_class.loc[:end_time].copy()
-
-                delta_seconds = (
+                is_new_sequence = True
+            else:
+                previous_end = segment_bounds[i-1]
+                gap_seconds = (end_time - previous_end).total_seconds()
+                is_new_sequence = gap_seconds > max_gap_min * 60
+                    
+                if is_new_sequence:
+                    # Long gap: the new increment forms
+                    # a one-minute precipitation window
+                    start_time = end_time
+                else:
+                    # Short gap: include minutes after the previous
+                    # increment, through the current increment
+                    start_time = previous_end + pd.Timedelta(minutes=1)
+            # Include the Geonor increment at end_time
+            seg = df_sum.loc[start_time:end_time].copy()
+            seg_m = df_mean.loc[start_time:end_time].copy()
+            seg_sf = sf_class.loc[start_time:end_time].copy()
+            # Duration represented by these 1-minute observations
+            delta_seconds = (
                     end_time - start_time
                 ).total_seconds() + 60
-
-            else:
-
-                previous_end = segment_bounds[i - 1]
-
-                start_time = (
-                    previous_end + pd.Timedelta(seconds=1)
-                )
-
-                seg = df_sum.loc[
-                    start_time:end_time
-                ].copy()
-
-                seg_m = df_mean.loc[
-                    start_time:end_time
-                ].copy()
-
-                seg_sf = sf_class.loc[
-                    start_time:end_time
-                ].copy()
-
-                delta_seconds = event_dt.iloc[i]
+            
+            new_sequence.append(is_new_sequence)
 
         segment_durations.append(delta_seconds / 3600)
         segment_starts.append(start_time)
@@ -1236,9 +1229,6 @@ def process_precip_segments(
         # # Temperature filter (>2 degrees C)
         # # ----------------------------------------------
 
-        # all_T = seg_m["air_temperature"].dropna()
-
-        # if not all_T.empty and (all_T > 2.0).any():
         mean_T = seg_m["air_temperature"].mean(skipna=True)
         # Save diagnostic information before filtering
         mean_temperatures.append(mean_T)
@@ -1304,28 +1294,14 @@ def process_precip_segments(
         if valid_classes.empty:
 
             sclass_60.append(np.nan)
-            # sclass_70.append(np.nan)
-            # sclass_80.append(np.nan)
+
 
         else:
-            # if len(sclass_60) < 10:
-            #     print(
-            #         "Window:", end_time,
-            #         "N:", len(valid_classes),
-            #         "Fractions:",
-            #         valid_classes.value_counts(normalize=True).to_dict()
-            #     )
+
             sclass_60 = test_and_return_dominant_sf_class(
                 valid_classes, sclass_60, threshold
             )
 
-            # sclass_70 = test_and_return_dominant_sf_class(
-            #     valid_classes, sclass_70, 0.70
-            # )
-
-            # sclass_80 = test_and_return_dominant_sf_class(
-            #     valid_classes, sclass_80, 0.80
-            # )
 
         # ----------------------------------------------
         # Particle size distribution
@@ -1356,16 +1332,6 @@ def process_precip_segments(
                 index=segment_bounds,
             ),
 
-            # pd.DataFrame(
-            #     {"snowflake_class_name_70": sclass_70},
-            #     index=segment_bounds,
-            # ),
-
-            # pd.DataFrame(
-            #     {"snowflake_class_name_80": sclass_80},
-            #     index=segment_bounds,
-            # ),
-
             pd.DataFrame(mascdb, index=segment_bounds),
             pd.DataFrame(counts, index=segment_bounds),
             pd.DataFrame(zs_counts, index=segment_bounds),
@@ -1388,20 +1354,24 @@ def process_precip_segments(
     df_out["mean_T_before_filter"] = mean_temperatures
     df_out["temperature_valid"] = temperature_valid
 
-    # flag long intervals 
-    max_gap_min = 60
-    df_out["gap_too_long"] = (df_out["delta_h"] *60 > max_gap_min)
+    df_out["temperature_status"] = np.select(
+    [
+        df_out["mean_T_before_filter"].isna(),
+        df_out["mean_T_before_filter"] > 2.0,
+    ],
+    [
+        "missing_temperature",
+        "above_2C",
+    ],
+    default="valid",
+)
+            
 
     if mode == "fixed":
         df_out["start_time"] = window_starts
     else:
-        df_out["start_time"] = (
-            df_out.index
-            - pd.to_timedelta(
-                df_out["delta_h"] * 3600,
-                unit="s",
-            )
-        )
+        df_out["start_time"] = segment_starts
+        df_out["new_precip_sequence"] = new_sequence
 
     # Calculate precipitation rate
     df_out["rate_mm_h"] = (
@@ -1411,9 +1381,9 @@ def process_precip_segments(
     # Identify windows suitable for Z-S analysis
     df_out["valid_precip"] = (
         df_out["rate_mm_h"].notna()
-        # & (df_out["rate_mm_h"] >= min_rate)
     )
 
+    
     # --------------------------------------------------
     # 5. Z-S snowfall rates
     # --------------------------------------------------
@@ -2419,20 +2389,10 @@ def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset,
     # subtract from index
     df['shifted_time_end'] = df.index - rounded_td
 
-    # if len(df_sum_offset) == 0:
-    #     df_sum_offset = ds[['Matrosov_a_400', 'Bracci_a_400', 'Nakai_a_400', 'Nakai_g_400', 'Pu_g_400', f'S_{a}_{b}_400',
-    #                 'Matrosov_a_800', 'Bracci_a_800', 'Nakai_a_800', 'Nakai_g_800', 'Pu_g_800', f'S_{a}_{b}_800',
-    #                 'Matrosov_a_1000', 'Bracci_a_1000', 'Nakai_a_1000', 'Nakai_g_1000', 'Pu_g_1000', f'S_{a}_{b}_1000',
-    #                 'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
+    
     df_sum_offset = df_sum_offset.copy()
     df_sum_offset.rename(columns={'Ze_linear_400': 'Ze_linear_sum_400', 'Ze_linear_800': 'Ze_linear_sum_800', 'Ze_linear_1000': 'Ze_linear_sum_1000'}, inplace=True)
-    # df_sum_offset['S_sim_all'] = ((df_sum_offset['Ze_linear_sum_400'] / 273.33) ** (1/0.31)) 
-    # df_sum_offset['S_sim_aggregate'] = ((df_sum_offset['Ze_linear_sum_400'] / 5006.19) ** (1/1.26))  
-    # df_sum_offset['S_sim_graupel'] = ((df_sum_offset['Ze_linear_sum_400'] / 316.87) ** (1/0.39)) 
-    # df_sum_offset['S_sim_mixed'] = ((df_sum_offset['Ze_linear_sum_400'] / 492.65) ** (1/0.57)) 
-    # if len(df_mean_offset) == 0:
-    #     df_mean_offset = ds[['Ze_400m', 'Ze_linear_400', 'Ze_linear_800', 'Ze_linear_1000', 'W_400m', 'W_800m', 'W_1000m']].sel(time=slice('2023-02-15', '2023-03-14')).to_dataframe()
-
+    
     df_mean_offset = df_mean_offset.copy()
     # for alt in [400, 800, 1000]:
     alt = 400
@@ -2440,34 +2400,36 @@ def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset,
     mask = df_mean_offset[f'W_{alt}m'].abs() > 7.
     df_mean_offset.loc[mask, f'W_{alt}m'] = np.nan
             # 
-
-    # df_mean_offset.rename(columns={'Ze_linear_400': 'Ze_linear_mean_400', 'Ze_linear_800': 'Ze_linear_mean_800', 'Ze_linear_1000': 'Ze_linear_mean_1000'}, inplace=True)
-
     
    
     sums = []
     means= []
     radar_counts = []
+    ze_lin_counts = []
+    shifted_starts = []
     for i in range(len(df)):
         delta_h_i = df['delta_h'].iloc[i]
         shifted_end = df['shifted_time_end'].iloc[i]
-        # seg = df_sum_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
-        # seg_m = df_mean_offset.loc[df['shifted_time_end'][i] + pd.Timedelta(seconds=1) : df.index[i]]
+        
         if pd.isna(shifted_end):
             sums.append(pd.Series(dtype=float))
             means.append(pd.Series(dtype=float))
             radar_counts.append(0)
+            ze_lin_counts.append(0)
+            shifted_starts.append(pd.NaT)
             continue
 
         if mode == "event":
             step = delta_h_i * 60 - 1
             start = shifted_end - pd.Timedelta(minutes=step)
+            shifted_starts.append(start)
 
             seg = df_sum_offset.loc[start : shifted_end]
             seg_m = df_mean_offset.loc[start : shifted_end]
         elif mode == "fixed":
             duration_i = pd.Timedelta(hours=delta_h_i)
             start = shifted_end - duration_i
+            shifted_starts.append(start)
 
             seg = df_sum_offset.loc[
                 (df_sum_offset.index >= start)
@@ -2484,10 +2446,8 @@ def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset,
         sums.append(seg.sum(numeric_only=True, min_count=1))
         means.append(seg_m.mean(numeric_only=True, skipna=True))
         radar_counts.append(seg[f"S_{a}_{b}_400m"].count())
+        ze_lin_counts.append(seg_m["Ze_linear_400m"].count())
 
-        # zs_cc = seg[['Ze_linear_sum_400', 'Ze_linear_sum_800', 'Ze_linear_sum_1000']].count()
-        # zs_cc = zs_cc.rename({"Ze_linear_sum_400":"count_Ze_lin_400", "Ze_linear_sum_800":"count_Ze_lin_800", "Ze_linear_sum_1000":"count_Ze_lin_1000"})
-        # zs_count.append(zs_cc)
 
     columns = [
     "shifted_time_end",
@@ -2496,8 +2456,6 @@ def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset,
     "wind_direction",
     "wind_speed",
     "snowflake_class_name",
-    # "snowflake_class_name_70",
-    # "snowflake_class_name_80",
     "fallspeed",
     "flake_Dmax",
     "gan3d_mass",
@@ -2507,6 +2465,7 @@ def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset,
     "count_flake_Dmax",
     "count_gan3d_mass",
     "count_precip",
+    "start_time"
 ]
     if mode == "fixed":
         columns.append("W_class_mean")
@@ -2515,8 +2474,11 @@ def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset,
                             pd.DataFrame(sums).set_index(df.index[:]), 
                             pd.DataFrame(means).set_index(df.index[:]),
                             ], 
-                            axis=1)# df['shifted_time_end'][1:].reset_index(drop=True)], axis=1)
+                            axis=1)
+    df_offset["shifted_time_start"] = shifted_starts
     df_offset["count_radar"] = radar_counts
+    df_offset["count_Ze_400m"] = ze_lin_counts
+
     # Expected number of one-minute radar observations
     df_offset["expected_radar"] = (
         df_offset["delta_h"] * 60
@@ -2524,34 +2486,19 @@ def apply_timeoffset_to_df(df, df_sum_offset, df_mean_offset,
 
     # Fraction of valid radar observations
     df_offset["radar_coverage"] = (
-        df_offset["count_radar"] / df_offset["expected_radar"]
-        )
-#     # limit Geonor precipitation to be above 0.1 mm/h and select only instances where there is a snowflake class and fall speed
-#     df_offset = df_offset.loc[
-#     (df_offset["rate_mm_h"] >= min_rate)
-#     & df_offset["snowflake_class_name_60"].notna()
-#     & df_offset["W_400m"].notna()
-# ].copy()
+        df_offset["count_Ze_400m"] / df_offset["expected_radar"]
+        )  
     
-    df_offset['start_time'] = df_offset.index - pd.to_timedelta(df_offset['delta_h'] * 3600, unit='sec')
+    # df_offset['start_time'] = df_offset.index - pd.to_timedelta(df_offset['delta_h'] * 3600, unit='sec')
 
-
-    # for alt in [400, 800, 1000]:
-        # # Compute Z from linear sums
-        # # Compute safely: return NaN for invalid values
-        # df_offset[f'Z_from_linear_sum_{alt}'] = df_offset[f'Ze_linear_sum_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
-        # df_offset[f'Z_from_linear_mean_{alt}'] = df_offset[f'Ze_linear_mean_{alt}'].apply(lambda y: 10 * np.log10(y) if y > 0 else np.nan)
     alt = "400"
     for name in ["Matrosov_aggregate", "Bracci_aggregate", "Nakai_aggregate", "Nakai_graupel", "Pu_graupel", "Schoger",f"S_{a}_{b}"]:
             df_offset[f"{name}_{alt}_mm_h"] = df_offset[f"{name}_{alt}m"] / df_offset["delta_h"]
 
+    # calculate reflectivity from mean linear reflectivity
+    df_offset["Ze_mean_dBZ_400m"] = (10 * np.log10(df_offset["Ze_linear_400m"]))
+
         
-
-        # # Calculate Matrosov based on Ze_sum
-        # df_offset[f'Matrosov_from_ze_sum_{alt}'] = ((df_offset[f'Ze_linear_sum_{alt}'] / 56) ** (1/1.2)) /(60*df_offset["delta_h"])  # convert rate to mm
-
-    # for class_name in ['all', 'aggregate', 'graupel', 'mixed']:
-    #     df_offset[f'S_sim_{class_name}_mm_h'] = df_offset[f'S_sim_{class_name}'] / df_offset["delta_h"]
     return df_offset
 
 # https://stackoverflow.com/questions/75731161/how-to-calculate-a-linear-regression-with-a-predefined-slope

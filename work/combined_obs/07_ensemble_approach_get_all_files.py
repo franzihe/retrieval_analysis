@@ -194,6 +194,7 @@ def process_one_day(date, mrr_files, met_files,  a, b,):#year, base_height, out_
         dsx["Ze"] = align_variable(Ze, dsx["Ze"])
 
         dsx["Ze_linear"] = 10**(dsx["Ze"]/10)
+        dsx["Ze_linear_400m"] = (dsx["Ze_linear"].isel(range=4).drop_vars("range"))
 
         W = (ds_mrr["W"].where(ds_mrr["Ze"] >= -20.))
         dsx["W"] = align_variable(W, dsx["W"])
@@ -241,7 +242,13 @@ def extract_event_tables(dsx, a, b):
 
 
 
-    df_mean = dsx[['air_temperature', 'wind_direction', 'wind_speed', 'W_400m']].to_dataframe().sort_values("time")
+    df_mean = dsx[[
+        'air_temperature', 
+        'wind_direction', 
+        'wind_speed', 
+        'W_400m',
+        "Ze_linear_400m",
+        ]].to_dataframe().sort_values("time")
 
 
     return df_sum, df_mean
@@ -349,7 +356,7 @@ def apply_offset(df_corr, df_sum, df_mean, a, b, mode="fixed", duration="4min"):
 # %%
 def run_event_processing(
     df_sum, df_mean, sf_class, a, b,
-    mode="fixed", duration="4min", threshold=60, diagnostic=False,
+    mode="fixed", duration="4min", threshold=60, diagnostic=False
 ):
     df_corr, psd_corr = fct.process_precip_segments(
         df_sum,
@@ -535,31 +542,21 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
     # print(sf_class["snowflake_class_name"].value_counts(dropna=False))
     # print(sf_class["snowflake_class_name"].unique())
 
-    # set 1-min Geonor precipitation to nan where it is smaller than 0.1mm/h. But the precipitation at the Geonor is in mm so we have to use 0.1mm/60 min to get it correct.
-    df_sum.loc[df_sum['precipitation'] < 0.1/60, 'precipitation'] = np.nan
+    # set 1-min Geonor precipitation to nan where it is smaller than 0.1mm.
+    df_sum_filtered = df_sum.copy()
+    df_sum_filtered.loc[df_sum_filtered['precipitation'] < 0.1, 'precipitation'] = np.nan
     # ------------------------------------------------------------------
     # 4. Process precipitation events
     # ------------------------------------------------------------------
-    # print("⏱ Running event processing")
-    # print("df_sum shape:", df_sum.shape)
-    # print("df_mean shape:", df_mean.shape)
-
-    
-
-    df_corr, psd_corr = run_event_processing(df_sum, df_mean, sf_class, a, b, mode=mode, duration=duration, threshold=threshold, diagnostic=False)
+    df_corr, psd_corr = run_event_processing(df_sum_filtered, df_mean, sf_class, a, b, mode=mode, duration=duration, threshold=threshold)
 
     print("\nBEFORE time offset:")
     print(df_corr["snowflake_class_name"].value_counts(dropna=False))
     
-    
-
-
 
     # ------------------------------------------------------------------
     # 5. Apply time offset (fall speed)
     # ------------------------------------------------------------------
-    # print("🕒 Applying time offset")
-    # assert df_corr.index.is_monotonic_increasing
 
     df_sum_offset = df_sum[
         [
@@ -572,7 +569,7 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
             f'S_{a}_{b}_400m'
             ]
             ].copy()
-    df_mean_offset = df_mean[['W_400m']].copy()
+    df_mean_offset = df_mean[['W_400m', 'Ze_linear_400m']].copy()
 
     df_corr_offset = apply_offset(
             df_corr, 
@@ -588,24 +585,6 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
     )
     print("\nAFTER time offset:")
     print(df_corr_offset["snowflake_class_name"].value_counts(dropna=False))
-    # coverage = df_corr_offset["radar_coverage"]
-
-    # print(f"\nRadar coverage: {mode}, {duration}")
-    # print(f"Total retained windows: {len(df_corr_offset)}")
-    # print(f"Complete windows (100%): {(coverage == 1).sum()}")
-    # print(f"Complete windows (%): {(coverage == 1).mean() * 100:.1f}")
-    # print(f"Windows >= 90% coverage: {(coverage >= 0.9).sum()}")
-    # print(f"Windows >= 75% coverage: {(coverage >= 0.75).sum()}")
-    # print(f"Mean radar coverage: {coverage.mean() * 100:.1f}%")
-    # print(f"Minimum radar coverage: {coverage.min() * 100:.1f}%")
-    # print(df_corr_offset["radar_coverage"]
-    #       .describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9])
-    #       )
-    # print("Coverage > 100%:", (df_corr_offset["radar_coverage"] > 1.001).sum())
-
-    # print("No radar data:", (coverage == 0).sum())
-    # print("Partial coverage:", ((coverage > 0) & (coverage < 1)).sum())
-    # print("Complete coverage:", (coverage == 1).sum())
 
     del df_corr, psd_corr
     gc.collect()
@@ -613,24 +592,8 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
     # ------------------------------------------------------------------
     # 6. Merge & write FINAL product (event-based)
     # ------------------------------------------------------------------
-
-    # print(df_corr_offset.columns[df_corr_offset.columns.duplicated()])
     df_final = df_corr_offset.copy()
-
-    # # Keep only the classification column for this threshold
-    # other_thresholds = [t for t in [60, 70, 80] if t != threshold]
-
-    # columns_to_drop = [
-    #         f"snowflake_class_name_{t}"
-    #         for t in other_thresholds
-    #         if f"snowflake_class_name_{t}" in df_final.columns
-    #     ]
-
-        # df_final = df_final.drop(columns=columns_to_drop)
-
     ds_final = df_final.to_xarray()
-
-    
 
     if ds_final.sizes.get("time", 0) > 0:
         write_final(ds_final, out_file)
@@ -640,15 +603,6 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
         ds_final.close()
 
     del df_final, ds_final
-
-    # # ------------------------------------------------------------------
-    # # 7. Nearest-crystal variant (optional but faithful)
-    # # ------------------------------------------------------------------
-    # ds_final_nearest = run_nearest_crystal_variant(df_sum, df_mean, sf_class)
-    # out_file = os.path.join(nc_dir, f"Z_S_2Tm_WD_WS_nearest_class_precip_event_dt_offset_{site}_{year}.nc")
-    # if len(ds_final_nearest.time) > 0:
-    #     write_final(ds_final, out_file)
-    #     print(f"Written {out_file}")
 
     # ------------------------------------------------------------------
     # 10. Cleanup (IMPORTANT)
@@ -719,7 +673,7 @@ def process_ensemble_member(a, b, INPUT_DATA_DIR, OUTPUT_DATA_DIR, site, year, v
 #         )
 
 
-# # %%
+# %%
 
 
 
